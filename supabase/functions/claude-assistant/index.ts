@@ -91,7 +91,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const { message, history } = await req.json();
+    const { message, history, scope } = await req.json();
     if (!message || typeof message !== 'string') {
       return new Response(JSON.stringify({ error: 'Missing message' }), {
         status: 400,
@@ -108,18 +108,23 @@ Deno.serve(async (req) => {
       supabase.from('pharmacies').select('id, name'),
     ]);
 
-    const mentionedPharmacy = (pharmacies ?? []).find((p: any) =>
-      message.toLowerCase().includes(p.name.toLowerCase())
-    );
+    // A pharmacy named directly in the question always wins (explicit user
+    // intent); otherwise fall back to whatever the app's Facility/Pharmacy
+    // selector currently has active, so the assistant answers about the
+    // same scope the user is looking at on screen.
+    const textMentionedPharmacy = (pharmacies ?? []).find((p: any) => message.toLowerCase().includes(p.name.toLowerCase()));
+    const mentionedPharmacy = textMentionedPharmacy ?? (scope?.pharmacyId ? { id: scope.pharmacyId, name: scope.pharmacyName } : null);
+    const scopedFacilityId: string | null = scope?.facilityId ?? null;
 
     let claimsQuery = supabase
       .from('claims')
-      .select('id, claim_date, pharmacy_id, facility_id, total_reimbursement, status')
+      .select('id, claim_date, pharmacy_id, facility_id, total_reimbursement, status, pharmacies(name)')
       .gte('claim_date', `${year}-${String(month).padStart(2, '0')}-01`)
       .lt('claim_date', month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, '0')}-01`)
       .order('claim_date', { ascending: true })
       .limit(200);
     if (mentionedPharmacy) claimsQuery = claimsQuery.eq('pharmacy_id', mentionedPharmacy.id);
+    if (scopedFacilityId) claimsQuery = claimsQuery.eq('facility_id', scopedFacilityId);
     if (explicitDate) claimsQuery = claimsQuery.eq('claim_date', explicitDate);
     const { data: claims } = await claimsQuery;
 
@@ -138,25 +143,27 @@ Deno.serve(async (req) => {
     const drugNameMatch = message.match(/(?:for|of)\s+([A-Za-z][A-Za-z0-9\- ]{2,30})\??$/i);
     let drugAccumulator: any[] = [];
     if (drugNameMatch) {
-      const { data } = await supabase
+      let drugQuery = supabase
         .from('accumulator')
-        .select('ndc, product_name, qty_on_hand, pack_size, ppu_340b, month, year, facility_id, exp_day')
+        .select('ndc, product_name, qty_on_hand, pack_size, ppu_340b, month, year, facility_id, pharmacy_id, exp_day, pharmacies(name)')
         .ilike('product_name', `%${drugNameMatch[1].trim()}%`)
         .order('year', { ascending: false })
         .order('month', { ascending: false })
         .limit(20);
-      drugAccumulator = data ?? [];
+      if (mentionedPharmacy) drugQuery = drugQuery.eq('pharmacy_id', mentionedPharmacy.id);
+      if (scopedFacilityId) drugQuery = drugQuery.eq('facility_id', scopedFacilityId);
+      const { data } = await drugQuery;
+      drugAccumulator = (data ?? []).map((r: any) => ({ ...r, pharmacyName: r.pharmacies?.name ?? null }));
     }
 
     const wantsUnmatched = /unmatched/i.test(message);
     let unmatched: any[] = [];
     if (wantsUnmatched) {
       const thirtyDaysAgo = new Date(now.getTime() - 30 * 86400 * 1000).toISOString().slice(0, 10);
-      const { data: recentClaims } = await supabase
-        .from('claims')
-        .select('id, claim_date')
-        .gte('claim_date', thirtyDaysAgo)
-        .limit(500);
+      let recentClaimsQuery = supabase.from('claims').select('id, claim_date, pharmacy_id').gte('claim_date', thirtyDaysAgo).limit(500);
+      if (mentionedPharmacy) recentClaimsQuery = recentClaimsQuery.eq('pharmacy_id', mentionedPharmacy.id);
+      if (scopedFacilityId) recentClaimsQuery = recentClaimsQuery.eq('facility_id', scopedFacilityId);
+      const { data: recentClaims } = await recentClaimsQuery;
       const recentIds = (recentClaims ?? []).map((c: any) => c.id);
       if (recentIds.length > 0) {
         const { data } = await supabase
@@ -173,13 +180,16 @@ Deno.serve(async (req) => {
     let expiring: any[] = [];
     if (wantsExpiring) {
       const sixtyDaysOut = new Date(now.getTime() + 60 * 86400 * 1000).toISOString().slice(0, 10);
-      const { data } = await supabase
+      let expiringQuery = supabase
         .from('accumulator')
-        .select('ndc, product_name, exp_day, qty_on_hand, facility_id, month, year')
+        .select('ndc, product_name, exp_day, qty_on_hand, facility_id, pharmacy_id, month, year, pharmacies(name)')
         .lte('exp_day', sixtyDaysOut)
         .order('exp_day', { ascending: true })
         .limit(100);
-      expiring = data ?? [];
+      if (mentionedPharmacy) expiringQuery = expiringQuery.eq('pharmacy_id', mentionedPharmacy.id);
+      if (scopedFacilityId) expiringQuery = expiringQuery.eq('facility_id', scopedFacilityId);
+      const { data } = await expiringQuery;
+      expiring = (data ?? []).map((r: any) => ({ ...r, pharmacyName: r.pharmacies?.name ?? null }));
     }
 
     // Aggregate dispensing volume by NDC for the detected month (top 15).
@@ -199,7 +209,15 @@ Deno.serve(async (req) => {
     const totalReimbursement = (claims ?? []).reduce((sum: number, c: any) => sum + Number(c.total_reimbursement ?? 0), 0);
 
     const contextPayload = {
-      queryDetected: { month, year, explicitDate, mentionedPharmacy: mentionedPharmacy?.name ?? null },
+      queryDetected: {
+        month,
+        year,
+        explicitDate,
+        mentionedPharmacy: mentionedPharmacy?.name ?? null,
+        scopeNote: mentionedPharmacy
+          ? `All figures below are already filtered to pharmacy "${mentionedPharmacy.name}" only.`
+          : 'No specific pharmacy was named in the question — figures below may include multiple pharmacies. If the user asks about a specific pharmacy by name, only use data where pharmacy_id/pharmacyName matches it.',
+      },
       facilities,
       pharmacies,
       periodSummary: {
@@ -208,13 +226,13 @@ Deno.serve(async (req) => {
         totalClaims: (claims ?? []).length,
         totalReimbursement: Number(totalReimbursement.toFixed(2)),
       },
-      claims,
+      claims: (claims ?? []).map((c: any) => ({ ...c, pharmacyName: c.pharmacies?.name ?? null })),
       claimLineItemsSample: lineItems.slice(0, 500),
       topDispensingVolume: topVolume,
       drugAccumulatorMatches: drugAccumulator,
       unmatchedNdcsLast30Days: unmatched,
       drugsExpiringWithin60Days: expiring,
-      note: 'All arrays are capped for payload size; if a total looks incomplete, tell the user to check the Dashboard/Reports page for the full dataset.',
+      note: 'All arrays are capped for payload size; if a total looks incomplete, tell the user to check the Dashboard/Reports page for the full dataset. Every accumulator and claim row belongs to exactly one pharmacy — never sum figures across different pharmacyName values unless the user asked for an all-pharmacy total.',
     };
 
     const anthropicMessages = [

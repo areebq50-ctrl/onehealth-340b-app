@@ -3,7 +3,6 @@ import { Loader2, UserPlus, Building2, Store, ToggleLeft, ToggleRight } from 'lu
 import { useFacility } from '../context/FacilityContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { fetchUsers, updateUserRole, setUserActive, inviteUser, addFacility, addPharmacy } from '../lib/settingsApi.js';
-import RoleBadge from '../components/common/RoleBadge.jsx';
 import { SkeletonTable } from '../components/common/Skeleton.jsx';
 
 function UsersPanel() {
@@ -27,6 +26,7 @@ function UsersPanel() {
 
   useEffect(() => {
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleInvite(e) {

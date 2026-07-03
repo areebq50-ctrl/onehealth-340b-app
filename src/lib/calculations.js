@@ -107,6 +107,43 @@ export function costOnHand340b(qtyOnHand, ppu) {
   return reimbursementOwed(qtyOnHand, ppu);
 }
 
+/**
+ * Replenishment (packs to order) business rule.
+ *
+ * Shortage       = max(0, -qtyAfter)              -- only when on-hand went negative
+ * Exact Packs    = Shortage ÷ Pack Size            -- e.g. 1.25 packs, shown as-is, never rounded
+ * Recommended    = ceil(Exact Packs)               -- whole packs to actually order (can't order 1.25)
+ *
+ * If qtyAfter is >= 0 (no shortage), all three are zero — a positive/zero
+ * balance never produces a negative "packs to order".
+ *
+ * This is a documented default (no prior business rule existed in the app).
+ * If your actual purchasing policy differs (e.g. reordering before hitting
+ * zero, or a different rounding rule), this is the one function to change.
+ *
+ * Example: qtyAfter=-60, packSize=90 -> shortage=60, exactPacks=0.6667, recommendedPacks=1
+ * Example: qtyAfter=-34, packSize=120 -> shortage=34, exactPacks=0.2833, recommendedPacks=1
+ * Example: qtyAfter=79,  packSize=110 -> shortage=0,  exactPacks=0,      recommendedPacks=0
+ */
+export function packsToOrder(qtyAfter, packSize) {
+  const qtyD = toDecimal(qtyAfter);
+  const packSizeD = toDecimal(packSize);
+
+  if (qtyD === null) return { shortage: null, exactPacks: null, recommendedPacks: null, flagged: true, reason: 'Qty is missing or non-numeric' };
+  if (packSizeD === null || packSizeD.isZero()) {
+    return { shortage: null, exactPacks: null, recommendedPacks: null, flagged: true, reason: 'Pack Size is missing or zero — cannot compute packs to order' };
+  }
+
+  if (qtyD.gte(0)) {
+    return { shortage: new Decimal(0), exactPacks: new Decimal(0), recommendedPacks: new Decimal(0), flagged: false, reason: null };
+  }
+
+  const shortage = qtyD.negated();
+  const exactPacks = shortage.dividedBy(packSizeD);
+  const recommendedPacks = exactPacks.ceil();
+  return { shortage, exactPacks, recommendedPacks, flagged: false, reason: null };
+}
+
 /** Round a Decimal to storage precision (4dp). Only call at the point of writing to the DB. */
 export function toStorage(decimalValue) {
   if (decimalValue === null || decimalValue === undefined) return null;

@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { Sparkles, Send, Loader2, User } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient.js';
 import { useToast } from '../context/ToastContext.jsx';
+import { useFacility } from '../context/FacilityContext.jsx';
 import MarkdownLite from '../components/assistant/MarkdownLite.jsx';
+import ScopeLabel from '../components/common/ScopeLabel.jsx';
+import FacilityPharmacySelector from '../components/common/FacilityPharmacySelector.jsx';
 
 const SUGGESTIONS = [
   'What is the total reimbursement owed this month?',
@@ -13,6 +16,7 @@ const SUGGESTIONS = [
 
 export default function AIAssistant() {
   const toast = useToast();
+  const { selectedFacilityId, selectedPharmacyId, selectedFacility, selectedPharmacy } = useFacility();
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
@@ -44,7 +48,16 @@ export default function AIAssistant() {
         .map((m) => ({ role: m.role, content: m.content }));
 
       const { data, error } = await supabase.functions.invoke('claude-assistant', {
-        body: { message: trimmed, history },
+        body: {
+          message: trimmed,
+          history,
+          scope: {
+            facilityId: selectedFacilityId !== 'all' ? selectedFacilityId : null,
+            facilityName: selectedFacilityId !== 'all' ? selectedFacility?.name ?? null : null,
+            pharmacyId: selectedPharmacyId !== 'all' ? selectedPharmacyId : null,
+            pharmacyName: selectedPharmacyId !== 'all' ? selectedPharmacy?.name ?? null : null,
+          },
+        },
       });
 
       if (error) throw error;
@@ -67,6 +80,11 @@ export default function AIAssistant() {
       <div className="mb-4 flex items-center gap-2">
         <Sparkles className="h-5 w-5 text-teal" />
         <h1 className="text-xl font-bold text-navy">AI Assistant</h1>
+      </div>
+
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white p-3">
+        <FacilityPharmacySelector />
+        <ScopeLabel className="ml-auto" />
       </div>
 
       <div ref={scrollRef} className="card mb-4 flex-1 space-y-4 overflow-y-auto p-6">

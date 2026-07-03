@@ -10,3 +10,4 @@ dist-ssr
 npm-debug.log*
 .vercel
 .supabase
+reference-files/

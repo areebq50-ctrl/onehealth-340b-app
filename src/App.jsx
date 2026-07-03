@@ -1,7 +1,8 @@
 import { Routes, Route } from 'react-router-dom';
 import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
-import DayDetail from './pages/DayDetail.jsx';
+import ClaimBatchResults from './pages/ClaimBatchResults.jsx';
+import ClaimSearch from './pages/ClaimSearch.jsx';
 import UploadClaims from './pages/UploadClaims.jsx';
 import Accumulator from './pages/Accumulator.jsx';
 import Reports from './pages/Reports.jsx';
@@ -23,7 +24,9 @@ export default function App() {
         }
       >
         <Route path="/" element={<Dashboard />} />
-        <Route path="/day/:claimId" element={<DayDetail />} />
+        <Route path="/claims" element={<ClaimSearch />} />
+        <Route path="/claims/:claimId" element={<ClaimBatchResults />} />
+        <Route path="/day/:claimId" element={<ClaimBatchResults />} />
         <Route path="/upload" element={<UploadClaims />} />
         <Route path="/accumulator" element={<Accumulator />} />
         <Route path="/reports" element={<Reports />} />

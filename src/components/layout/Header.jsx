@@ -1,12 +1,11 @@
 import { useState } from 'react';
-import { LogOut, ChevronDown, Building2 } from 'lucide-react';
+import { LogOut, ChevronDown } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { useFacility } from '../../context/FacilityContext.jsx';
 import Breadcrumb from './Breadcrumb.jsx';
+import ScopeLabel from '../common/ScopeLabel.jsx';
 
 export default function Header() {
   const { profile, signOut } = useAuth();
-  const { facilities, selectedFacilityId, setSelectedFacilityId } = useFacility();
   const [menuOpen, setMenuOpen] = useState(false);
 
   const initials = (profile?.email ?? '?').slice(0, 2).toUpperCase();
@@ -16,21 +15,7 @@ export default function Header() {
       <Breadcrumb />
 
       <div className="flex items-center gap-4">
-        <div className="hidden items-center gap-2 rounded-lg border border-gray-200 bg-surface-alt px-3 py-1.5 sm:flex">
-          <Building2 className="h-4 w-4 text-gray-400" />
-          <select
-            className="bg-transparent text-sm font-medium text-navy focus:outline-none"
-            value={selectedFacilityId}
-            onChange={(e) => setSelectedFacilityId(e.target.value)}
-          >
-            <option value="all">All Facilities</option>
-            {facilities.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.name}
-              </option>
-            ))}
-          </select>
-        </div>
+        <ScopeLabel className="hidden lg:flex" />
 
         <div className="relative">
           <button

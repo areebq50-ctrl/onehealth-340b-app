@@ -2,12 +2,17 @@ import { supabase } from './supabaseClient.js';
 import { Decimal } from './calculations.js';
 import { fetchPeriods, fetchAccumulatorRows } from './accumulatorApi.js';
 
-/** All accumulator months on record for a facility, each with its full row set — used for the multi-sheet Accumulator export. */
-export async function fetchAllAccumulatorMonths(facilityId) {
-  const periods = await fetchPeriods(facilityId);
+/**
+ * All accumulator months on record for a facility+pharmacy scope, each with
+ * its full row set — used for the multi-sheet Accumulator export. When
+ * pharmacyId is 'all', every pharmacy's rows are included (each still
+ * tagged with pharmacyName) rather than merged.
+ */
+export async function fetchAllAccumulatorMonths(facilityId, pharmacyId) {
+  const periods = await fetchPeriods(facilityId, pharmacyId);
   const months = [];
   for (const p of periods) {
-    const rows = await fetchAccumulatorRows(facilityId, p.month, p.year);
+    const rows = await fetchAccumulatorRows(facilityId, pharmacyId, p.month, p.year);
     months.push({ month: p.month, year: p.year, rows });
   }
   return months;
@@ -18,17 +23,21 @@ export async function fetchAllAccumulatorMonths(facilityId) {
  * claim line item's already-correct reimbursement_owed/packs_dispensed —
  * never recomputed as totalQty × a single representative PPU, so a mid-month
  * PPU change on the accumulator can't silently distort the total.
+ * pharmacyId='all' includes every pharmacy under the facility (grouped
+ * separately, never merged); a specific pharmacyId restricts to just it.
  */
-export async function fetchMonthlyReimbursementByPharmacy(facilityId, month, year) {
+export async function fetchMonthlyReimbursementByPharmacy(facilityId, pharmacyId, month, year) {
   const monthStart = `${year}-${String(month).padStart(2, '0')}-01`;
   const nextMonth = month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, '0')}-01`;
 
-  const { data: claims, error: claimsErr } = await supabase
+  let claimsQuery = supabase
     .from('claims')
     .select('id, pharmacy_id, pharmacies(name)')
     .eq('facility_id', facilityId)
     .gte('claim_date', monthStart)
     .lt('claim_date', nextMonth);
+  if (pharmacyId && pharmacyId !== 'all') claimsQuery = claimsQuery.eq('pharmacy_id', pharmacyId);
+  const { data: claims, error: claimsErr } = await claimsQuery;
   if (claimsErr) throw claimsErr;
 
   const claimIds = (claims ?? []).map((c) => c.id);
@@ -79,14 +88,23 @@ export async function fetchMonthlyReimbursementByPharmacy(facilityId, month, yea
   }));
 }
 
-/** Full accumulator_audit_log rows in a date range, joined with user email for display. */
-export async function fetchAuditLog(dateFrom, dateTo) {
-  const { data, error } = await supabase
+/** Full accumulator_audit_log rows in a date range, joined with user + pharmacy for display. Optionally scoped to one pharmacy. */
+export async function fetchAuditLog(dateFrom, dateTo, { facilityId, pharmacyId } = {}) {
+  let query = supabase
     .from('accumulator_audit_log')
-    .select('*, users(email)')
+    .select('*, users(email), pharmacies(name), facilities(name)')
     .gte('timestamp', `${dateFrom}T00:00:00Z`)
     .lte('timestamp', `${dateTo}T23:59:59Z`)
     .order('timestamp', { ascending: false });
+  if (facilityId && facilityId !== 'all') query = query.eq('facility_id', facilityId);
+  if (pharmacyId && pharmacyId !== 'all') query = query.eq('pharmacy_id', pharmacyId);
+
+  const { data, error } = await query;
   if (error) throw error;
-  return (data ?? []).map((r) => ({ ...r, userEmail: r.users?.email ?? r.user_id }));
+  return (data ?? []).map((r) => ({
+    ...r,
+    userEmail: r.users?.email ?? r.user_id,
+    pharmacyName: r.pharmacies?.name ?? '—',
+    facilityName: r.facilities?.name ?? '—',
+  }));
 }

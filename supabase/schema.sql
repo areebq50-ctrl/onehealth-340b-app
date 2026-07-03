@@ -1,6 +1,12 @@
 -- ============================================================================
 -- One.Health Partners — 340B Operations Platform
--- Full Supabase schema: tables, RLS policies, and atomic RPC functions.
+-- Baseline schema: tables, RLS policies, and atomic RPC functions.
+--
+-- SETUP ORDER: run this file first, then every file in supabase/migrations/
+-- in filename order (0001, 0002, 0003, 0004, ...), then seed.sql. The
+-- migrations add pharmacy-level scoping to the accumulator (this baseline
+-- predates that and is facility-only) and the RX-level claim ledger fields —
+-- they are not optional. See supabase/migrations/ for what each one does.
 --
 -- ARCHITECTURE NOTE ON WRITES
 -- ---------------------------

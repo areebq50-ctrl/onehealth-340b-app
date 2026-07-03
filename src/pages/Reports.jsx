@@ -3,9 +3,10 @@ import { Download, Loader2, FileSpreadsheet, Database, TrendingUp, ScrollText } 
 import { useFacility } from '../context/FacilityContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { fetchAllAccumulatorMonths, fetchMonthlyReimbursementByPharmacy, fetchAuditLog } from '../lib/reportsApi.js';
-import { fetchClaimsHistory } from '../lib/dashboardApi.js';
+import { fetchClaimsHistory, fetchClaimDetail } from '../lib/dashboardApi.js';
 import { exportAccumulator, exportMonthlyReimbursementReport, exportAuditLog, exportDailyClaims } from '../lib/excelExport.js';
-import { fetchClaimDetail } from '../lib/dashboardApi.js';
+import FacilityPharmacySelector from '../components/common/FacilityPharmacySelector.jsx';
+import ScopeLabel from '../components/common/ScopeLabel.jsx';
 
 const now = new Date();
 
@@ -25,10 +26,9 @@ function ReportCard({ icon: Icon, title, description, children }) {
 }
 
 export default function Reports() {
-  const { facilities, pharmacies, selectedFacilityId } = useFacility();
+  const { facilities, selectedFacilityId, selectedPharmacyId, selectedFacility, selectedPharmacy, isAllPharmacies } = useFacility();
   const toast = useToast();
 
-  const [facilityId, setFacilityId] = useState(selectedFacilityId !== 'all' ? selectedFacilityId : facilities[0]?.id ?? '');
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [year, setYear] = useState(now.getFullYear());
   const [dateFrom, setDateFrom] = useState(() => new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10));
@@ -36,17 +36,18 @@ export default function Reports() {
   const [claimId, setClaimId] = useState('');
   const [busy, setBusy] = useState(null);
 
-  const effectiveFacilityId = facilityId || facilities[0]?.id;
+  const effectiveFacilityId = selectedFacilityId !== 'all' ? selectedFacilityId : facilities[0]?.id;
+  const pharmacyLabel = isAllPharmacies ? 'All Pharmacies' : selectedPharmacy?.name;
 
   async function handleAccumulatorExport() {
     setBusy('accumulator');
     try {
-      const months = await fetchAllAccumulatorMonths(effectiveFacilityId);
+      const months = await fetchAllAccumulatorMonths(effectiveFacilityId, selectedPharmacyId);
       if (months.length === 0) {
-        toast.warning('No accumulator data found for this facility.');
+        toast.warning('No accumulator data found for this facility/pharmacy.');
         return;
       }
-      exportAccumulator(months);
+      exportAccumulator(months, { facilityName: selectedFacility?.name, pharmacyLabel });
       toast.success('Accumulator export downloaded.');
     } catch (err) {
       toast.error(`Export failed: ${err.message}`);
@@ -58,12 +59,12 @@ export default function Reports() {
   async function handleMonthlyReportExport() {
     setBusy('monthly');
     try {
-      const groups = await fetchMonthlyReimbursementByPharmacy(effectiveFacilityId, month, year);
+      const groups = await fetchMonthlyReimbursementByPharmacy(effectiveFacilityId, selectedPharmacyId, month, year);
       if (groups.length === 0) {
         toast.warning('No claims found for that month.');
         return;
       }
-      exportMonthlyReimbursementReport(groups, month, year);
+      exportMonthlyReimbursementReport(groups, month, year, { facilityName: selectedFacility?.name, pharmacyLabel });
       toast.success('Monthly reimbursement report downloaded.');
     } catch (err) {
       toast.error(`Export failed: ${err.message}`);
@@ -75,12 +76,12 @@ export default function Reports() {
   async function handleAuditLogExport() {
     setBusy('audit');
     try {
-      const rows = await fetchAuditLog(dateFrom, dateTo);
+      const rows = await fetchAuditLog(dateFrom, dateTo, { facilityId: selectedFacilityId, pharmacyId: selectedPharmacyId });
       if (rows.length === 0) {
         toast.warning('No audit log entries found in that date range.');
         return;
       }
-      exportAuditLog(rows, dateFrom, dateTo);
+      exportAuditLog(rows, dateFrom, dateTo, { facilityName: selectedFacility?.name, pharmacyLabel });
       toast.success('Audit log export downloaded.');
     } catch (err) {
       toast.error(`Export failed: ${err.message}`);
@@ -115,7 +116,7 @@ export default function Reports() {
   async function loadRecentClaims() {
     if (claimsLoaded) return;
     try {
-      const claims = await fetchClaimsHistory({ facilityId: effectiveFacilityId, pharmacyId: 'all', dateFrom: null, dateTo: null });
+      const claims = await fetchClaimsHistory({ facilityId: effectiveFacilityId, pharmacyId: selectedPharmacyId, dateFrom: null, dateTo: null });
       setRecentClaims(claims.slice(0, 100));
       setClaimsLoaded(true);
     } catch (err) {
@@ -130,16 +131,10 @@ export default function Reports() {
         <p className="text-sm text-gray-500">Excel exports matching original file formats</p>
       </div>
 
-      <div className="max-w-xs">
-        <label className="label-text">Facility</label>
-        <select className="input-field" value={effectiveFacilityId} onChange={(e) => setFacilityId(e.target.value)}>
-          {facilities.map((f) => (
-            <option key={f.id} value={f.id}>
-              {f.name}
-            </option>
-          ))}
-        </select>
+      <div className="card p-5">
+        <FacilityPharmacySelector includeAllFacilities={false} />
       </div>
+      <ScopeLabel />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <ReportCard icon={FileSpreadsheet} title="Daily Claims Export" description="Pivot summary + raw claim rows for a single day's upload.">
@@ -157,7 +152,7 @@ export default function Reports() {
           </button>
         </ReportCard>
 
-        <ReportCard icon={Database} title="Accumulator Export" description="One sheet per month on record for this facility.">
+        <ReportCard icon={Database} title="Accumulator Export" description="One sheet per month on record — includes a Pharmacy column when viewing all pharmacies.">
           <button className="btn-primary" onClick={handleAccumulatorExport} disabled={busy === 'accumulator'}>
             {busy === 'accumulator' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
             Export
@@ -181,7 +176,7 @@ export default function Reports() {
           </button>
         </ReportCard>
 
-        <ReportCard icon={ScrollText} title="Audit Log Export" description="Full immutable accumulator audit trail for a date range (HRSA-ready).">
+        <ReportCard icon={ScrollText} title="Audit Log Export" description="Full immutable accumulator audit trail for a date range (HRSA-ready), with facility and pharmacy on every row.">
           <div className="mb-3 flex gap-3">
             <div>
               <label className="label-text">From</label>

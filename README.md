@@ -19,15 +19,16 @@ and quantity math.
 ## 2. Set up Supabase
 
 1. Create a new Supabase project.
-2. In the Supabase SQL Editor, run `supabase/schema.sql` — this creates every
-   table, enables Row Level Security with role-based policies, and creates
-   the atomic RPC functions (`process_claim`, `edit_accumulator_row`,
-   `rollover_month`, `add_accumulator_row`, `import_accumulator_rows`) that
-   the app uses for every write that touches the accumulator.
-3. Run `supabase/seed.sql` to create the default facility (Heartland) and
+2. In the Supabase SQL Editor, run `supabase/schema.sql` — this creates the
+   baseline tables, RLS policies, and RPC functions.
+3. Run **every file in `supabase/migrations/` in filename order** (0001
+   through 0006) — these are not optional. They add pharmacy-level scoping
+   to the accumulator (the baseline schema is facility-only) and the
+   RX-level claim ledger. See "Pharmacy scoping" below for why this matters.
+4. Run `supabase/seed.sql` to create the default facility (Heartland) and
    pharmacies (Lawrence Hause, Blue Swan, Third Coast).
-4. In **Authentication → Providers**, ensure Email is enabled.
-5. Create your first admin user:
+5. In **Authentication → Providers**, ensure Email is enabled.
+6. Create your first admin user:
    - Add the user via **Authentication → Users → Add User** (or have them
      sign up). A `public.users` row is auto-created with `role='regular'`
      via a database trigger.
@@ -35,7 +36,7 @@ and quantity math.
      ```sql
      update public.users set role = 'admin' where email = 'you@onehealthpartners.com';
      ```
-6. Deploy the Edge Functions (see below) and set their secrets.
+7. Deploy the Edge Functions (see below) and set their secrets.
 
 ### Deploying Edge Functions
 
@@ -131,26 +132,93 @@ The app runs at `http://localhost:5173`.
 - **AI Assistant**: `supabase/functions/claude-assistant` verifies the
   caller's Supabase session, runs a small set of heuristic queries against
   the database based on keywords in the question (month/date/pharmacy/drug
-  name/"unmatched"/"expiring"), assembles a structured JSON context payload,
-  and sends it to the Claude API. The system prompt instructs the model to
-  only use the supplied data and never estimate figures.
+  name/"unmatched"/"expiring") *and* the app's currently-selected
+  Facility/Pharmacy scope (passed from the frontend), assembles a structured
+  JSON context payload, and sends it to the Claude API. The system prompt
+  instructs the model to only use the supplied data and never estimate
+  figures, and never sum figures across pharmacies unless asked.
+
+## Pharmacy scoping
+
+Every accumulator row, claim, audit log entry, and report belongs to
+exactly one pharmacy — a Blue Swan claim can never deduct from Lawrence
+Hause's inventory even for the same NDC on the same day. This is enforced
+at every layer, not just in the UI:
+
+- **Schema**: `accumulator` is keyed on `(ndc, facility_id, pharmacy_id, month, year)`.
+  A `validate_pharmacy_facility_pair` trigger rejects any row where the
+  facility/pharmacy pair isn't a real link in `pharmacy_facilities`.
+- **RPCs**: `process_claim`, `edit_accumulator_row`, `add_accumulator_row`,
+  `rollover_month`, and `import_accumulator_rows` all require a specific
+  `pharmacy_id` and only ever read/write that pharmacy's rows.
+- **RLS**: direct writes to `accumulator` are blocked outside the latest
+  period *for that specific pharmacy* — a closed month for Blue Swan stays
+  closed even if Lawrence Hause is still open.
+- **Frontend**: `FacilityContext` (`src/context/FacilityContext.jsx`) is the
+  single source of truth for the selected facility/pharmacy across every
+  page, persisted to `localStorage`. Changing facility clears an
+  invalid pharmacy selection automatically. "All Pharmacies" is a
+  read-only aggregate view everywhere it appears — every write action is
+  disabled until one specific pharmacy is selected.
+
+### Claim batches, the RX-level ledger, and replenishment
+
+`claims` is the "claim batch" record (one per pharmacy/facility/date
+upload). Two child tables capture different granularities of the same
+upload:
+
+- `claim_line_items` — one row **per NDC**, pivoted/summed. This is what
+  drives accumulator deduction, reimbursement, and the audit log.
+- `claim_raw_lines` — one row **per original source line** (per RX fill),
+  preserving every column from the source workbook (Refill No., RX#, Date
+  Filled/Written, payer/BIN/PCN/prescriber, etc.) for the "All Claims" tab.
+  It's pure record-keeping and never touches the accumulator.
+
+**Replenishment** (`packsToOrder()` in `src/lib/calculations.js`) is
+computed at read time from `claim_line_items.qty_after` and `.pack_size` —
+never stored — so it can't drift out of sync with the source numbers it's
+derived from. The rule (no prior business rule existed in the source
+spreadsheets, so this is a documented default — confirm it matches your
+actual purchasing policy):
+
+```
+Shortage    = max(0, -qtyAfter)
+Exact Packs = Shortage ÷ Pack Size        (shown as-is, e.g. 1.25 — never rounded)
+Recommended = ceil(Exact Packs)           (whole packs to actually order)
+```
+
+### Excel preview
+
+`ExcelPreviewModal` (`src/components/files/ExcelPreviewModal.jsx`) fetches
+a short-lived Supabase Storage **signed URL** (the `claim-files` bucket is
+private — never a public URL) and parses it client-side with SheetJS.
+Sheets are capped at 500 previewed rows to keep the browser responsive; a
+banner explains when a sheet was truncated, and "Download Original File"
+always gets the full file. The preview never mutates the stored file.
 
 ## Project structure
 
 ```
 src/
-  lib/                  decimal.js math, NDC normalization, data cleaning,
-                         Supabase API wrappers, Excel export
-  parsers/               .xlsx raw-sheet parser + per-pharmacy PDF parsers
-  pages/                 one file per sidebar route
-  components/            layout, shared UI (DataTable, Modal, Toast, etc.)
-  context/               Auth, Facility, Toast React contexts
+  lib/                   decimal.js math (incl. packsToOrder), NDC normalization,
+                          data cleaning, Supabase API wrappers, Excel export
+  parsers/                .xlsx raw-sheet parser + per-pharmacy PDF parsers
+  pages/                  one file per sidebar route (Dashboard, UploadClaims,
+                          ClaimSearch, ClaimBatchResults, Accumulator, Reports,
+                          AIAssistant, Settings)
+  components/
+    common/                layout-agnostic shared UI: DataTable, Modal, Toast,
+                          FacilityPharmacySelector, ScopeLabel, etc.
+    files/                 ExcelPreviewModal
+  context/                Auth, Facility (facility+pharmacy scope), Toast
 supabase/
-  schema.sql             tables, RLS policies, RPC functions
-  seed.sql                default facility/pharmacies
+  schema.sql              baseline tables, RLS policies, RPC functions
+  migrations/              0001-0006: pharmacy scoping + RX-level ledger — see
+                          each file's header comment for what it does and why
+  seed.sql                 default facility/pharmacies
   functions/
-    claude-assistant/     AI Assistant Edge Function
-    admin-users/           admin user-invite Edge Function
+    claude-assistant/      AI Assistant Edge Function
+    admin-users/            admin user-invite Edge Function
 ```
 
 ## Branding

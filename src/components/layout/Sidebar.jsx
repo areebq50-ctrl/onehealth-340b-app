@@ -6,12 +6,14 @@ import {
   FileBarChart2,
   Sparkles,
   Settings as SettingsIcon,
+  FolderSearch,
 } from 'lucide-react';
 import Logo from '../common/Logo.jsx';
 
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/upload', label: 'Upload Claims', icon: UploadCloud },
+  { to: '/claims', label: 'Claim Search', icon: FolderSearch },
   { to: '/accumulator', label: 'Accumulator', icon: Database },
   { to: '/reports', label: 'Reports', icon: FileBarChart2 },
   { to: '/assistant', label: 'AI Assistant', icon: Sparkles },

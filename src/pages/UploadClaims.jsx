@@ -13,22 +13,51 @@ import {
   matchAgainstAccumulator,
   uploadClaimFile,
   processClaim,
+  computeFileHash,
 } from '../lib/claimsApi.js';
 import { packsDispensed, reimbursementOwed, newQtyOnHand, formatCurrency, formatQty, sumQty, Decimal } from '../lib/calculations.js';
 import { normalizeNdc } from '../lib/ndc.js';
+import FacilityPharmacySelector from '../components/common/FacilityPharmacySelector.jsx';
+import Modal from '../components/common/Modal.jsx';
 
-const STEPS = ['Select', 'Parse', 'Review', 'Confirm'];
+function ledgerToRpcRow(row) {
+  const l = row.ledger ?? {};
+  return {
+    ndc: row.ndc,
+    product_name: row.drugName,
+    qty_dispensed: row.qty.toString(),
+    refill_no: l.refillNo ?? null,
+    refills_auth: l.refillsAuth ?? null,
+    refills_remain: l.refillsRemain ?? null,
+    date_filled: l.dateFilled ?? null,
+    date_written: l.dateWritten ?? null,
+    rx_number: l.rxNumber ?? null,
+    days_supply: l.daysSupply ?? null,
+    primary_paid: l.primaryPaid ?? null,
+    patient_paid: l.patientPaid ?? null,
+    tax: l.tax ?? null,
+    fee: l.fee ?? null,
+    total_paid: l.totalPaid ?? null,
+    primary_payer: l.primaryPayer ?? null,
+    bin: l.bin ?? null,
+    pcn: l.pcn ?? null,
+    group_code: l.groupCode ?? null,
+    member_id: l.memberId ?? null,
+    scc: l.scc ?? null,
+    prescriber: l.prescriber ?? null,
+    prescriber_npi: l.prescriberNpi ?? null,
+  };
+}
 
 export default function UploadClaims() {
-  const { facilities, pharmacies } = useFacility();
-  const { isAdmin, profile } = useAuth();
+  const { facilities, pharmaciesForSelectedFacility, selectedFacilityId, selectedPharmacyId } = useFacility();
+  const { isAdmin } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
 
-  const [facilityId, setFacilityId] = useState('');
-  const [pharmacyId, setPharmacyId] = useState('');
   const [claimDate, setClaimDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [file, setFile] = useState(null);
+  const [fileHash, setFileHash] = useState(null);
 
   const [parsing, setParsing] = useState(false);
   const [parseError, setParseError] = useState(null);
@@ -41,26 +70,24 @@ export default function UploadClaims() {
 
   const [crossReferencing, setCrossReferencing] = useState(false);
   const [periodMissing, setPeriodMissing] = useState(false);
-  const [matchedRows, setMatchedRows] = useState(null); // pivot rows + matched/accumulator
+  const [matchedRows, setMatchedRows] = useState(null);
   const [reassignInputs, setReassignInputs] = useState({});
 
   const [existingClaim, setExistingClaim] = useState(null);
   const [overwriteConfirmed, setOverwriteConfirmed] = useState(false);
   const [checkingDuplicate, setCheckingDuplicate] = useState(false);
 
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const selectedFacility = facilities.find((f) => f.id === facilityId);
-  const facilityPharmacies = useMemo(
-    () => pharmacies.filter((p) => !facilityId || (p.pharmacy_facilities ?? []).some((pf) => pf.facility_id === facilityId)),
-    [pharmacies, facilityId]
-  );
-  const selectedPharmacy = pharmacies.find((p) => p.id === pharmacyId);
+  const selectedFacility = facilities.find((f) => f.id === selectedFacilityId);
+  const selectedPharmacy = pharmaciesForSelectedFacility.find((p) => p.id === selectedPharmacyId);
+  const pharmacySelected = selectedFacilityId !== 'all' && selectedPharmacyId !== 'all';
 
   const claimMonth = claimDate ? Number(claimDate.slice(5, 7)) : null;
   const claimYear = claimDate ? Number(claimDate.slice(0, 4)) : null;
 
-  const canParse = facilityId && pharmacyId && claimDate && file;
+  const canParse = pharmacySelected && claimDate && file;
 
   function resetDownstream() {
     setParseError(null);
@@ -78,6 +105,7 @@ export default function UploadClaims() {
   async function handleFileChange(e) {
     const f = e.target.files?.[0] ?? null;
     setFile(f);
+    setFileHash(null);
     resetDownstream();
   }
 
@@ -87,6 +115,8 @@ export default function UploadClaims() {
     resetDownstream();
     try {
       const buf = await file.arrayBuffer();
+      const hash = await computeFileHash(buf);
+      setFileHash(hash);
       const isPdf = file.name.toLowerCase().endsWith('.pdf');
 
       let cleaned;
@@ -156,14 +186,14 @@ export default function UploadClaims() {
   async function runCrossReference(rows) {
     setCrossReferencing(true);
     try {
-      const hasPeriod = await accumulatorPeriodExists(facilityId, claimMonth, claimYear);
+      const hasPeriod = await accumulatorPeriodExists(selectedFacilityId, selectedPharmacyId, claimMonth, claimYear);
       setPeriodMissing(!hasPeriod);
       if (!hasPeriod) {
         setMatchedRows(null);
         return;
       }
       const pivot = pivotByNdc(rows);
-      const matched = await matchAgainstAccumulator(facilityId, claimMonth, claimYear, pivot);
+      const matched = await matchAgainstAccumulator(selectedFacilityId, selectedPharmacyId, claimMonth, claimYear, pivot);
       setMatchedRows(matched);
     } catch (err) {
       toast.error(`Failed to cross-reference accumulator: ${err.message}`);
@@ -175,7 +205,7 @@ export default function UploadClaims() {
   async function runDuplicateCheck() {
     setCheckingDuplicate(true);
     try {
-      const existing = await findExistingClaim(pharmacyId, facilityId, claimDate);
+      const existing = await findExistingClaim(selectedPharmacyId, selectedFacilityId, claimDate);
       setExistingClaim(existing);
     } catch (err) {
       toast.error(`Failed to check for duplicate uploads: ${err.message}`);
@@ -193,9 +223,9 @@ export default function UploadClaims() {
         toast.error('Enter a valid NDC to reassign to.');
         return;
       }
-      const acc = await findAccumulatorRow(facilityId, claimMonth, claimYear, targetNdc);
+      const acc = await findAccumulatorRow(selectedFacilityId, selectedPharmacyId, claimMonth, claimYear, targetNdc);
       if (!acc) {
-        toast.error(`NDC ${targetNdc} was not found in the accumulator for this period either.`);
+        toast.error(`NDC ${targetNdc} was not found in ${selectedPharmacy?.name ?? 'this pharmacy'}'s accumulator for this period either.`);
         return;
       }
       setMatchedRows((prev) =>
@@ -238,6 +268,8 @@ export default function UploadClaims() {
     return { totalQty, totalReimb, ndcCount: matched.length, unmatchedCount: calcRows.filter((r) => !r.matched).length };
   }, [calcRows]);
 
+  const isExactDuplicateFile = existingClaim && fileHash && existingClaim.file_hash && existingClaim.file_hash === fileHash;
+
   const canConfirm =
     calcRows.length > 0 &&
     !periodMissing &&
@@ -245,6 +277,7 @@ export default function UploadClaims() {
     !saving;
 
   async function handleConfirmSave() {
+    setConfirmOpen(false);
     setSaving(true);
     try {
       let filePath = null;
@@ -267,17 +300,25 @@ export default function UploadClaims() {
         product_name_raw: r.drugName,
       }));
 
+      const rawLines = (validRows ?? []).map(ledgerToRpcRow);
+
       const claimId = await processClaim({
-        pharmacyId,
-        facilityId,
+        pharmacyId: selectedPharmacyId,
+        facilityId: selectedFacilityId,
         claimDate,
         filePath,
         lineItems,
+        rawLines,
         overwrite: Boolean(existingClaim),
+        originalFilename: file?.name ?? null,
+        fileHash,
+        totalRows: (validRows?.length ?? 0) + skippedRows.length,
+        validRows: validRows?.length ?? 0,
+        invalidRows: skippedRows.length,
       });
 
-      toast.success('Claim processed and accumulator updated successfully.');
-      navigate(`/day/${claimId}`);
+      toast.success(`Claims for ${selectedFacility?.name} → ${selectedPharmacy?.name} dated ${claimDate} were processed successfully.`);
+      navigate(`/claims/${claimId}`);
     } catch (err) {
       toast.error(`Save failed — no changes were made: ${err.message}`);
     } finally {
@@ -289,82 +330,39 @@ export default function UploadClaims() {
     <div className="mx-auto max-w-5xl space-y-6">
       <div>
         <h1 className="text-xl font-bold text-navy">Upload Claims</h1>
-        <p className="text-sm text-gray-500">Process a daily claims file and update the accumulator.</p>
+        <p className="text-sm text-gray-500">Process a daily claims file and update the selected pharmacy&apos;s accumulator.</p>
       </div>
 
-      {/* Step 1: Selection */}
       <section className="card p-6">
-        <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-gray-500">1. Pharmacy, Facility & Date</h2>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <div>
-            <label className="label-text">Facility</label>
-            <select
-              className="input-field"
-              value={facilityId}
-              onChange={(e) => {
-                setFacilityId(e.target.value);
-                setPharmacyId('');
-                resetDownstream();
-              }}
-            >
-              <option value="">Select facility...</option>
-              {facilities.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="label-text">Pharmacy</label>
-            <select
-              className="input-field"
-              value={pharmacyId}
-              disabled={!facilityId}
-              onChange={(e) => {
-                setPharmacyId(e.target.value);
-                resetDownstream();
-              }}
-            >
-              <option value="">Select pharmacy...</option>
-              {facilityPharmacies.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="label-text">Claim Date</label>
-            <input
-              type="date"
-              className="input-field"
-              value={claimDate}
-              onChange={(e) => {
-                setClaimDate(e.target.value);
-                resetDownstream();
-              }}
-            />
-          </div>
+        <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-gray-500">1. Facility, Pharmacy & Date</h2>
+        <FacilityPharmacySelector includeAllFacilities={false} />
+        {selectedFacilityId !== 'all' && selectedPharmacyId === 'all' && (
+          <p className="mt-2 text-xs text-warning">Select a specific pharmacy — claims cannot be uploaded against &quot;All Pharmacies&quot;.</p>
+        )}
+        <div className="mt-4 max-w-xs">
+          <label className="label-text">Claim Date</label>
+          <input
+            type="date"
+            className="input-field"
+            value={claimDate}
+            onChange={(e) => {
+              setClaimDate(e.target.value);
+              resetDownstream();
+            }}
+          />
         </div>
 
         <div className="mt-4">
           <label className="label-text">Claim File (.xlsx or .pdf)</label>
-          <div className="flex items-center gap-3">
-            <input
-              type="file"
-              accept=".xlsx,.xls,.pdf"
-              onChange={handleFileChange}
-              className="block w-full text-sm text-gray-600 file:mr-3 file:rounded-lg file:border-0 file:bg-teal-50 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-teal-700 hover:file:bg-teal-100"
-            />
-          </div>
+          <input
+            type="file"
+            accept=".xlsx,.xls,.pdf"
+            onChange={handleFileChange}
+            className="block w-full text-sm text-gray-600 file:mr-3 file:rounded-lg file:border-0 file:bg-teal-50 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-teal-700 hover:file:bg-teal-100"
+          />
         </div>
 
-        <button
-          className="btn-primary mt-5"
-          disabled={!canParse || parsing}
-          onClick={handleParse}
-        >
+        <button className="btn-primary mt-5" disabled={!canParse || parsing} onClick={handleParse}>
           {parsing ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
           Parse File
         </button>
@@ -383,7 +381,6 @@ export default function UploadClaims() {
         )}
       </section>
 
-      {/* Manual entry fallback */}
       {needsManualEntry && (
         <section className="card p-6">
           <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-gray-500">
@@ -396,40 +393,28 @@ export default function UploadClaims() {
                   className="input-field"
                   placeholder="NDC"
                   value={row.ndcRaw}
-                  onChange={(e) =>
-                    setManualRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ndcRaw: e.target.value } : r)))
-                  }
+                  onChange={(e) => setManualRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ndcRaw: e.target.value } : r)))}
                 />
                 <input
                   className="input-field"
                   placeholder="Drug Name"
                   value={row.drugName}
-                  onChange={(e) =>
-                    setManualRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, drugName: e.target.value } : r)))
-                  }
+                  onChange={(e) => setManualRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, drugName: e.target.value } : r)))}
                 />
                 <input
                   className="input-field"
                   placeholder="Qty"
                   value={row.qtyRaw}
-                  onChange={(e) =>
-                    setManualRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, qtyRaw: e.target.value } : r)))
-                  }
+                  onChange={(e) => setManualRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, qtyRaw: e.target.value } : r)))}
                 />
-                <button
-                  className="btn-secondary px-2"
-                  onClick={() => setManualRows((prev) => prev.filter((_, idx) => idx !== i))}
-                >
+                <button className="btn-secondary px-2" onClick={() => setManualRows((prev) => prev.filter((_, idx) => idx !== i))}>
                   &times;
                 </button>
               </div>
             ))}
           </div>
           <div className="mt-3 flex gap-2">
-            <button
-              className="btn-secondary"
-              onClick={() => setManualRows((prev) => [...prev, { ndcRaw: '', drugName: '', qtyRaw: '' }])}
-            >
+            <button className="btn-secondary" onClick={() => setManualRows((prev) => [...prev, { ndcRaw: '', drugName: '', qtyRaw: '' }])}>
               + Add Row
             </button>
             <button className="btn-primary" onClick={handleManualEntrySubmit} disabled={parsing}>
@@ -440,13 +425,9 @@ export default function UploadClaims() {
         </section>
       )}
 
-      {/* Skipped rows */}
       {skippedRows.length > 0 && (
         <section className="card p-4">
-          <button
-            className="flex w-full items-center justify-between text-sm font-semibold text-navy"
-            onClick={() => setSkippedOpen((o) => !o)}
-          >
+          <button className="flex w-full items-center justify-between text-sm font-semibold text-navy" onClick={() => setSkippedOpen((o) => !o)}>
             <span className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-warning" />
               Skipped Rows ({skippedRows.length})
@@ -476,32 +457,33 @@ export default function UploadClaims() {
         </section>
       )}
 
-      {/* Period missing */}
       {periodMissing && (
         <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-warning">
           <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
           <span>
-            No accumulator has been set up for {claimMonth}/{claimYear} at this facility yet. Go to{' '}
-            <strong>Accumulator → Start New Month</strong> before uploading claims for this period.
+            No accumulator exists for {selectedPharmacy?.name} for {claimMonth}/{claimYear}. Go to{' '}
+            <strong>Accumulator → Start New Month</strong> for this pharmacy before uploading claims for this period.
           </span>
         </div>
       )}
 
-      {/* Duplicate warning */}
       {existingClaim && (
         <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-danger">
           <p className="flex items-center gap-2 font-semibold">
-            <AlertTriangle className="h-4 w-4" /> A claim already exists for this pharmacy/facility/date
+            <AlertTriangle className="h-4 w-4" />
+            {isExactDuplicateFile
+              ? 'This exact claim file was already uploaded for this pharmacy'
+              : 'A claim already exists for this pharmacy/facility/date'}
           </p>
           <p className="mt-1">
-            Uploaded {new Date(existingClaim.uploaded_at).toLocaleString()}, totaling{' '}
-            {formatCurrency(existingClaim.total_reimbursement)}. Confirming will reverse that claim's accumulator
-            effect and reapply this new file, in a single transaction.
+            {existingClaim.original_filename && <>Original file: <strong>{existingClaim.original_filename}</strong>. </>}
+            Uploaded {new Date(existingClaim.uploaded_at).toLocaleString()}, totaling {formatCurrency(existingClaim.total_reimbursement)}.
+            Confirming will reverse that claim&apos;s accumulator effect and reapply this new file, in a single transaction.
           </p>
           {isAdmin ? (
             <label className="mt-2 flex items-center gap-2">
               <input type="checkbox" checked={overwriteConfirmed} onChange={(e) => setOverwriteConfirmed(e.target.checked)} />
-              I confirm I want to overwrite the existing claim
+              I confirm I want to overwrite the existing batch for this pharmacy
             </label>
           ) : (
             <p className="mt-2 font-medium">Only an admin can confirm this overwrite.</p>
@@ -509,14 +491,13 @@ export default function UploadClaims() {
         </div>
       )}
 
-      {/* Unmatched NDCs */}
       {calcRows.some((r) => !r.matched) && (
         <section className="card p-6">
           <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-warning">
             <AlertTriangle className="h-4 w-4" /> Unmatched NDCs ({calcRows.filter((r) => !r.matched).length})
           </h2>
           <p className="mb-3 text-sm text-gray-500">
-            These NDCs were dispensed but not found in the accumulator for this period. They will be recorded on the
+            These NDCs were dispensed but not found in {selectedPharmacy?.name}&apos;s accumulator for this period. They will be recorded on the
             claim for reference but will NOT affect reimbursement totals or on-hand quantities unless reassigned.
           </p>
           <div className="space-y-2">
@@ -542,7 +523,6 @@ export default function UploadClaims() {
         </section>
       )}
 
-      {/* Preview + totals */}
       {calcRows.some((r) => r.matched) && (
         <section className="card overflow-hidden">
           <div className="border-b border-gray-100 p-6">
@@ -601,9 +581,7 @@ export default function UploadClaims() {
             <span>
               Total Reimbursement: <strong>{formatCurrency(grandTotals.totalReimb)}</strong>
             </span>
-            {grandTotals.unmatchedCount > 0 && (
-              <span className="text-warning">{grandTotals.unmatchedCount} unmatched</span>
-            )}
+            {grandTotals.unmatchedCount > 0 && <span className="text-warning">{grandTotals.unmatchedCount} unmatched</span>}
           </div>
         </section>
       )}
@@ -615,12 +593,46 @@ export default function UploadClaims() {
               <Loader2 className="h-4 w-4 animate-spin" /> Checking...
             </span>
           ) : null}
-          <button className="btn-primary" disabled={!canConfirm} onClick={handleConfirmSave}>
+          <button className="btn-primary" disabled={!canConfirm} onClick={() => setConfirmOpen(true)}>
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
             Confirm & Save
           </button>
         </div>
       )}
+
+      <Modal open={confirmOpen} onClose={() => setConfirmOpen(false)} title="Confirm Claim Processing">
+        <div className="space-y-3 text-sm">
+          <p className="text-gray-500">You are about to process:</p>
+          <dl className="divide-y divide-gray-100 rounded-lg border border-gray-100">
+            {[
+              ['Facility', selectedFacility?.name],
+              ['Pharmacy', selectedPharmacy?.name],
+              ['Claim Date', claimDate],
+              ['Original Filename', file?.name ?? '—'],
+              ['Number of Rows', (validRows?.length ?? 0) + skippedRows.length],
+              ['Valid Rows', validRows?.length ?? 0],
+              ['Invalid Rows', skippedRows.length],
+              ['Matched NDCs', grandTotals.ndcCount],
+              ['Unmatched NDCs', grandTotals.unmatchedCount],
+              ['Estimated Reimbursement', formatCurrency(grandTotals.totalReimb)],
+            ].map(([label, value]) => (
+              <div key={label} className="flex justify-between px-3 py-2">
+                <dt className="text-gray-500">{label}</dt>
+                <dd className="font-medium text-navy">{value}</dd>
+              </div>
+            ))}
+          </dl>
+          <p className="text-xs text-gray-400">Confirming will change the accumulator for {selectedPharmacy?.name} only. This cannot be undone without admin intervention.</p>
+          <div className="flex justify-end gap-2 pt-2">
+            <button className="btn-secondary" onClick={() => setConfirmOpen(false)}>
+              Cancel
+            </button>
+            <button className="btn-primary" onClick={handleConfirmSave}>
+              <CheckCircle2 className="h-4 w-4" /> Confirm & Process
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

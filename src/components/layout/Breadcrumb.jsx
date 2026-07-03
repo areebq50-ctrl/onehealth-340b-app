@@ -3,11 +3,12 @@ import { useLocation, Link } from 'react-router-dom';
 const LABELS = {
   '': 'Dashboard',
   upload: 'Upload Claims',
+  claims: 'Claim Search',
   accumulator: 'Accumulator',
   reports: 'Reports',
   assistant: 'AI Assistant',
   settings: 'Settings',
-  day: 'Day Detail',
+  day: 'Claim Batch Results',
 };
 
 export default function Breadcrumb() {

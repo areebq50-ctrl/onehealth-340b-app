@@ -1,9 +1,37 @@
 import * as XLSX from 'xlsx';
 import { cleanClaimRow } from '../lib/dataCleaning.js';
+import { normalizeExcelDateCell, toDecimal } from '../lib/calculations.js';
 
 const NDC_HEADER_ALIASES = ['ndc', 'ndc code', 'ndc#', 'ndc number', 'ndc11'];
 const DRUG_HEADER_ALIASES = ['drug name', 'drug', 'product name', 'product', 'description', 'item description'];
 const QTY_HEADER_ALIASES = ['qty', 'quantity', 'qty dispensed', 'quantity dispensed', 'sum of qty', 'dispensed qty'];
+
+// Optional RX-level ledger columns — captured as pass-through detail for the
+// "All Claims" tab (claim_raw_lines) when present. Never required; missing
+// columns just leave the field null. Aliases match the real reference
+// workbook's exact headers (Refill No., RX#, Primary BIN, etc.).
+const LEDGER_COLUMN_ALIASES = {
+  refillNo: ['refill no.', 'refill no', 'refill number'],
+  refillsAuth: ['refills auth.', 'refills auth', 'refills authorized'],
+  refillsRemain: ['refills remain.', 'refills remain', 'refills remaining'],
+  dateFilled: ['date filled'],
+  dateWritten: ['date written'],
+  rxNumber: ['rx#', 'rx #', 'rx number'],
+  daysSupply: ['ds', 'days supply'],
+  primaryPaid: ['primary paid'],
+  patientPaid: ['patient paid'],
+  tax: ['tax'],
+  fee: ['fee'],
+  totalPaid: ['total'],
+  primaryPayer: ['primary'],
+  bin: ['primary bin', 'bin'],
+  pcn: ['primary pcn', 'pcn'],
+  groupCode: ['primary group', 'group'],
+  memberId: ['primary id', 'member id'],
+  scc: ['scc'],
+  prescriber: ['prescriber'],
+  prescriberNpi: ['prescriber npi'],
+};
 
 function normalizeHeaderCell(v) {
   return String(v ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -68,6 +96,56 @@ function pickRawTransactionSheet(workbook) {
   return best;
 }
 
+/** Best-effort integer parse — returns null (not NaN/0) for anything unparseable, so callers can tell "absent" from "zero". */
+function toIntOrNull(value) {
+  const d = toDecimal(value);
+  return d === null ? null : d.toDecimalPlaces(0).toNumber();
+}
+
+function toNumOrNull(value) {
+  const d = toDecimal(value);
+  return d === null ? null : d.toNumber();
+}
+
+/** Text field preserving leading zeros (RX#, BIN, PCN, Group, Member ID) — always stringified, never left as a coerced number. */
+function toTextOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  return String(value);
+}
+
+/**
+ * Pulls the optional RX-level ledger fields for one row into a flat object
+ * (all pass-through, none of these gate row validity). Date columns go
+ * through normalizeExcelDateCell so serials from real workbooks convert
+ * correctly; identifier columns are always stringified to preserve leading
+ * zeros.
+ */
+function extractLedgerFields(row, ledgerCols) {
+  const cell = (field) => (ledgerCols[field] >= 0 ? row[ledgerCols[field]] : null);
+  return {
+    refillNo: toIntOrNull(cell('refillNo')),
+    refillsAuth: toIntOrNull(cell('refillsAuth')),
+    refillsRemain: toIntOrNull(cell('refillsRemain')),
+    dateFilled: normalizeExcelDateCell(cell('dateFilled')),
+    dateWritten: normalizeExcelDateCell(cell('dateWritten')),
+    rxNumber: toTextOrNull(cell('rxNumber')),
+    daysSupply: toNumOrNull(cell('daysSupply')),
+    primaryPaid: toNumOrNull(cell('primaryPaid')),
+    patientPaid: toNumOrNull(cell('patientPaid')),
+    tax: toNumOrNull(cell('tax')),
+    fee: toNumOrNull(cell('fee')),
+    totalPaid: toNumOrNull(cell('totalPaid')),
+    primaryPayer: toTextOrNull(cell('primaryPayer')),
+    bin: toTextOrNull(cell('bin')),
+    pcn: toTextOrNull(cell('pcn')),
+    groupCode: toTextOrNull(cell('groupCode')),
+    memberId: toTextOrNull(cell('memberId')),
+    scc: toTextOrNull(cell('scc')),
+    prescriber: toTextOrNull(cell('prescriber')),
+    prescriberNpi: toTextOrNull(cell('prescriberNpi')),
+  };
+}
+
 /**
  * Parse a raw claims .xlsx file into cleaned rows, applying every data
  * cleaning rule from the spec. Never throws on malformed data — bad rows are
@@ -121,6 +199,11 @@ export function parseClaimsXlsx(arrayBuffer) {
     return { error: 'Required columns (NDC, Qty) are missing from this file.', sheetName, validRows: [], skippedRows: [] };
   }
 
+  const ledgerCols = {};
+  for (const [field, aliases] of Object.entries(LEDGER_COLUMN_ALIASES)) {
+    ledgerCols[field] = findColumnIndex(headerRow, aliases);
+  }
+
   const validRows = [];
   const skippedRows = [];
 
@@ -143,7 +226,7 @@ export function parseClaimsXlsx(arrayBuffer) {
       continue;
     }
 
-    validRows.push({ rowNumber, ...cleaned.row });
+    validRows.push({ rowNumber, ...cleaned.row, ledger: extractLedgerFields(row, ledgerCols) });
   }
 
   if (validRows.length === 0) {

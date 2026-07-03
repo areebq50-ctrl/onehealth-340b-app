@@ -7,6 +7,8 @@ import { useToast } from '../context/ToastContext.jsx';
 import { fetchClaimsHistory, fetchDashboardSummary, fetchDailyTrend } from '../lib/dashboardApi.js';
 import { formatCurrency, formatQty } from '../lib/calculations.js';
 import DataTable from '../components/common/DataTable.jsx';
+import FacilityPharmacySelector from '../components/common/FacilityPharmacySelector.jsx';
+import ScopeLabel from '../components/common/ScopeLabel.jsx';
 import { SkeletonCards, SkeletonTable } from '../components/common/Skeleton.jsx';
 import EmptyState from '../components/common/EmptyState.jsx';
 
@@ -31,11 +33,10 @@ function SummaryCard({ icon: Icon, label, value, tone = 'teal' }) {
 }
 
 export default function Dashboard() {
-  const { facilities, pharmacies, selectedFacilityId } = useFacility();
+  const { selectedFacilityId, selectedPharmacyId, selectedPharmacy, isAllPharmacies } = useFacility();
   const toast = useToast();
   const navigate = useNavigate();
 
-  const [pharmacyFilter, setPharmacyFilter] = useState('all');
   const [dateFrom, setDateFrom] = useState(() => new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10));
   const [dateTo, setDateTo] = useState(() => now.toISOString().slice(0, 10));
 
@@ -50,9 +51,14 @@ export default function Dashboard() {
       setLoading(true);
       try {
         const [summaryData, claimsData, trendData] = await Promise.all([
-          fetchDashboardSummary({ facilityId: selectedFacilityId, month: now.getMonth() + 1, year: now.getFullYear() }),
-          fetchClaimsHistory({ facilityId: selectedFacilityId, pharmacyId: pharmacyFilter, dateFrom, dateTo }),
-          fetchDailyTrend({ facilityId: selectedFacilityId, month: now.getMonth() + 1, year: now.getFullYear() }),
+          fetchDashboardSummary({
+            facilityId: selectedFacilityId,
+            pharmacyId: selectedPharmacyId,
+            month: now.getMonth() + 1,
+            year: now.getFullYear(),
+          }),
+          fetchClaimsHistory({ facilityId: selectedFacilityId, pharmacyId: selectedPharmacyId, dateFrom, dateTo }),
+          fetchDailyTrend({ facilityId: selectedFacilityId, pharmacyId: selectedPharmacyId, month: now.getMonth() + 1, year: now.getFullYear() }),
         ]);
         if (cancelled) return;
         setSummary(summaryData);
@@ -68,12 +74,13 @@ export default function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, [selectedFacilityId, pharmacyFilter, dateFrom, dateTo]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFacilityId, selectedPharmacyId, dateFrom, dateTo]);
 
   const columns = useMemo(
     () => [
       { key: 'claim_date', label: 'Date', sortable: true, accessor: (r) => r.claim_date },
-      { key: 'pharmacyName', label: 'Pharmacy', sortable: true },
+      ...(isAllPharmacies ? [{ key: 'pharmacyName', label: 'Pharmacy', sortable: true }] : []),
       { key: 'facilityName', label: 'Facility', sortable: true },
       { key: 'ndcCount', label: 'NDCs Processed', sortable: true },
       { key: 'totalQty', label: 'Total Qty Dispensed', sortable: true, accessor: (r) => r.totalQty.toNumber(), render: (r) => formatQty(r.totalQty) },
@@ -85,8 +92,12 @@ export default function Dashboard() {
       },
       { key: 'uploadedByEmail', label: 'Uploaded By', sortable: true },
     ],
-    []
+    [isAllPharmacies]
   );
+
+  const emptyMessage = isAllPharmacies
+    ? 'No claims found for this facility in this range.'
+    : `No claims found for ${selectedPharmacy?.name ?? 'this pharmacy'} in this period.`;
 
   return (
     <div className="space-y-6">
@@ -95,11 +106,21 @@ export default function Dashboard() {
         <p className="text-sm text-gray-500">340B claims processing overview</p>
       </div>
 
+      <div className="card p-5">
+        <FacilityPharmacySelector />
+      </div>
+      <ScopeLabel period={`${now.toLocaleString('default', { month: 'long' })} ${now.getFullYear()}`} />
+
       {loading && !summary ? (
         <SkeletonCards />
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <SummaryCard icon={DollarSign} label="Reimbursement This Month" value={formatCurrency(summary?.totalReimbursement)} tone="teal" />
+          <SummaryCard
+            icon={DollarSign}
+            label={isAllPharmacies ? 'Reimbursement This Month (All Pharmacies)' : `Reimbursement This Month — ${selectedPharmacy?.name ?? ''}`}
+            value={formatCurrency(summary?.totalReimbursement)}
+            tone="teal"
+          />
           <SummaryCard icon={FileText} label="Claims Processed" value={summary?.totalClaims ?? 0} tone="navy" />
           <SummaryCard icon={AlertTriangle} label="Unmatched NDCs" value={summary?.unmatchedCount ?? 0} tone="coral" />
           <SummaryCard icon={Clock} label="Expiring Within 60 Days" value={summary?.expiringCount ?? 0} tone="amber" />
@@ -107,7 +128,9 @@ export default function Dashboard() {
       )}
 
       <div className="card p-5">
-        <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-gray-500">Monthly Reimbursement Trend</h2>
+        <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-gray-500">
+          Monthly Reimbursement Trend {isAllPharmacies ? '(All Pharmacies)' : `— ${selectedPharmacy?.name ?? ''}`}
+        </h2>
         {trend.length === 0 ? (
           <p className="py-8 text-center text-sm text-gray-400">No claims processed yet this month.</p>
         ) : (
@@ -125,17 +148,6 @@ export default function Dashboard() {
 
       <div className="flex flex-wrap items-end gap-4">
         <div>
-          <label className="label-text">Pharmacy</label>
-          <select className="input-field" value={pharmacyFilter} onChange={(e) => setPharmacyFilter(e.target.value)}>
-            <option value="all">All Pharmacies</option>
-            {pharmacies.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
           <label className="label-text">From</label>
           <input type="date" className="input-field" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
         </div>
@@ -148,21 +160,17 @@ export default function Dashboard() {
       {loading ? (
         <SkeletonTable />
       ) : claims.length === 0 ? (
-        <EmptyState
-          icon={Inbox}
-          title="No claims in this range"
-          message="Upload a claims file to get started, or widen your date filter."
-        />
+        <EmptyState icon={Inbox} title="No claims in this range" message={emptyMessage} />
       ) : (
         <DataTable
           columns={columns}
           rows={claims}
           rowKey={(r) => r.id}
           searchPlaceholder="Search claims..."
-          onRowClick={(r) => navigate(`/day/${r.id}`)}
+          onRowClick={(r) => navigate(`/claims/${r.id}`)}
           rowClassName={(r) => (r.unmatchedCount > 0 ? 'border-l-2 border-l-warning' : '')}
           emptyTitle="No claims"
-          emptyMessage="No claims match your filters."
+          emptyMessage={emptyMessage}
         />
       )}
     </div>

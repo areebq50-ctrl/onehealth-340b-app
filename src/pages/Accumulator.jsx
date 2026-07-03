@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Download, Plus, Upload, CalendarRange, Loader2, Lock, Pencil } from 'lucide-react';
+import { Download, Plus, Upload, CalendarRange, Loader2, Lock, Pencil, Trash2, AlertTriangle } from 'lucide-react';
 import { useFacility } from '../context/FacilityContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
@@ -10,6 +10,7 @@ import {
   addAccumulatorRow,
   rolloverMonth,
   importAccumulatorRows,
+  deleteAccumulatorRow,
 } from '../lib/accumulatorApi.js';
 import { parseAccumulatorXlsx } from '../parsers/accumulatorXlsxParser.js';
 import { exportAccumulator } from '../lib/excelExport.js';
@@ -20,10 +21,12 @@ import DataTable from '../components/common/DataTable.jsx';
 import Modal from '../components/common/Modal.jsx';
 import { SkeletonTable } from '../components/common/Skeleton.jsx';
 import EmptyState from '../components/common/EmptyState.jsx';
+import FacilityPharmacySelector from '../components/common/FacilityPharmacySelector.jsx';
+import ScopeLabel from '../components/common/ScopeLabel.jsx';
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-function EditRowForm({ row, onSave, onCancel, saving }) {
+function EditRowForm({ row, onSave, onDelete, onCancel, saving }) {
   const [form, setForm] = useState({
     product_name: row.product_name ?? '',
     pack_size: row.pack_size ?? '',
@@ -71,27 +74,31 @@ function EditRowForm({ row, onSave, onCancel, saving }) {
           <input className="input-field" value={form.manufacturer ?? ''} onChange={(e) => setForm((f) => ({ ...f, manufacturer: e.target.value }))} />
         </div>
       </div>
-      <div className="flex justify-end gap-2 pt-2">
-        <button className="btn-secondary" onClick={onCancel} disabled={saving}>
-          Cancel
+      <div className="flex items-center justify-between pt-2">
+        <button className="btn-danger" onClick={onDelete} disabled={saving}>
+          <Trash2 className="h-4 w-4" /> Delete Row
         </button>
-        <button className="btn-primary" onClick={() => onSave(form)} disabled={saving}>
-          {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-          Save
-        </button>
+        <div className="flex gap-2">
+          <button className="btn-secondary" onClick={onCancel} disabled={saving}>
+            Cancel
+          </button>
+          <button className="btn-primary" onClick={() => onSave(form)} disabled={saving}>
+            {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+            Save
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
 export default function Accumulator() {
-  const { facilities, selectedFacilityId } = useFacility();
+  const { selectedFacilityId, selectedPharmacyId, selectedFacility, selectedPharmacy, isAllPharmacies } = useFacility();
   const { isAdmin } = useAuth();
   const toast = useToast();
 
-  const [facilityId, setFacilityId] = useState('');
   const [periods, setPeriods] = useState([]);
-  const [period, setPeriod] = useState(null); // { month, year }
+  const [period, setPeriod] = useState(null);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -101,32 +108,31 @@ export default function Accumulator() {
   const [importOpen, setImportOpen] = useState(false);
   const [rolloverOpen, setRolloverOpen] = useState(false);
 
-  useEffect(() => {
-    if (selectedFacilityId && selectedFacilityId !== 'all') setFacilityId(selectedFacilityId);
-    else if (facilities.length > 0 && !facilityId) setFacilityId(facilities[0].id);
-  }, [selectedFacilityId, facilities]);
+  const facilitySelected = selectedFacilityId !== 'all';
+  const canWrite = isAdmin && facilitySelected && !isAllPharmacies;
 
   async function loadPeriods() {
-    if (!facilityId) return;
-    const p = await fetchPeriods(facilityId);
+    if (!facilitySelected) return;
+    const p = await fetchPeriods(selectedFacilityId, selectedPharmacyId);
     setPeriods(p);
     setPeriod(p[0] ?? null);
   }
 
   useEffect(() => {
     loadPeriods();
-  }, [facilityId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFacilityId, selectedPharmacyId]);
 
   useEffect(() => {
     async function loadRows() {
-      if (!facilityId || !period) {
+      if (!facilitySelected || !period) {
         setRows([]);
         setLoading(false);
         return;
       }
       setLoading(true);
       try {
-        const data = await fetchAccumulatorRows(facilityId, period.month, period.year);
+        const data = await fetchAccumulatorRows(selectedFacilityId, selectedPharmacyId, period.month, period.year);
         setRows(data);
       } catch (err) {
         toast.error(`Failed to load accumulator: ${err.message}`);
@@ -135,15 +141,16 @@ export default function Accumulator() {
       }
     }
     loadRows();
-  }, [facilityId, period]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFacilityId, selectedPharmacyId, period]);
 
   const isLatestPeriod = periods.length > 0 && period && periods[0].month === period.month && periods[0].year === period.year;
-  const selectedFacility = facilities.find((f) => f.id === facilityId);
 
   const columns = useMemo(
     () => [
       { key: 'ndc', label: 'NDC', sortable: true, render: (r) => <span className="font-mono text-xs">{r.ndc}</span> },
       { key: 'product_name', label: 'Product Name', sortable: true },
+      ...(isAllPharmacies ? [{ key: 'pharmacyName', label: 'Pharmacy', sortable: true }] : []),
       { key: 'pack_size', label: 'Pack Size', sortable: true, accessor: (r) => Number(r.pack_size ?? 0) },
       { key: 'qty_on_hand', label: 'Qty on Hand', sortable: true, accessor: (r) => Number(r.qty_on_hand ?? 0), render: (r) => formatQty(r.qty_on_hand) },
       { key: 'packs_on_hand', label: 'Packs on Hand', sortable: true, accessor: (r) => Number(r.packs_on_hand ?? 0), render: (r) => (r.packs_on_hand !== null ? formatQty(r.packs_on_hand) : '—') },
@@ -160,7 +167,7 @@ export default function Accumulator() {
       { key: 'ppu_340b', label: '340B PPU', sortable: true, accessor: (r) => Number(r.ppu_340b ?? 0), render: (r) => formatCurrency(r.ppu_340b) },
       { key: 'cost_on_hand_340b', label: 'Cost on Hand', sortable: true, accessor: (r) => Number(r.cost_on_hand_340b ?? 0), render: (r) => formatCurrency(r.cost_on_hand_340b) },
       { key: 'manufacturer', label: 'Manufacturer', sortable: true },
-      ...(isAdmin && isLatestPeriod
+      ...(canWrite && isLatestPeriod
         ? [
             {
               key: 'actions',
@@ -174,8 +181,13 @@ export default function Accumulator() {
           ]
         : []),
     ],
-    [isAdmin, isLatestPeriod]
+    [canWrite, isLatestPeriod, isAllPharmacies]
   );
+
+  async function refreshRows() {
+    const data = await fetchAccumulatorRows(selectedFacilityId, selectedPharmacyId, period.month, period.year);
+    setRows(data);
+  }
 
   async function handleSaveEdit(form) {
     setSavingEdit(true);
@@ -183,8 +195,7 @@ export default function Accumulator() {
       await editAccumulatorRow({ id: editingRow.id, ...form });
       toast.success('Accumulator row updated.');
       setEditingRow(null);
-      const data = await fetchAccumulatorRows(facilityId, period.month, period.year);
-      setRows(data);
+      await refreshRows();
     } catch (err) {
       toast.error(`Update failed: ${err.message}`);
     } finally {
@@ -192,31 +203,65 @@ export default function Accumulator() {
     }
   }
 
+  async function handleDeleteRow() {
+    if (!window.confirm(`Delete accumulator row for NDC ${editingRow.ndc}? This is audited and cannot be undone.`)) return;
+    setSavingEdit(true);
+    try {
+      await deleteAccumulatorRow(editingRow.id);
+      toast.success('Accumulator row deleted.');
+      setEditingRow(null);
+      await refreshRows();
+    } catch (err) {
+      toast.error(`Delete failed: ${err.message}`);
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
+  if (!facilitySelected) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-xl font-bold text-navy">Accumulator</h1>
+          <p className="text-sm text-gray-500">Master drug inventory by facility and pharmacy</p>
+        </div>
+        <div className="card p-5">
+          <FacilityPharmacySelector includeAllFacilities={false} />
+        </div>
+        <EmptyState title="Select a facility" message="Choose a facility above to view its accumulator." />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-xl font-bold text-navy">Accumulator</h1>
-          <p className="text-sm text-gray-500">Master drug inventory by facility and month</p>
+          <p className="text-sm text-gray-500">Master drug inventory by facility and pharmacy</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
             className="btn-secondary"
             onClick={() =>
-              rows.length > 0 && exportAccumulator([{ month: period.month, year: period.year, rows }])
+              rows.length > 0 &&
+              exportAccumulator([{ month: period.month, year: period.year, rows }], {
+                facilityName: selectedFacility?.name,
+                pharmacyLabel: isAllPharmacies ? 'All Pharmacies' : selectedPharmacy?.name,
+              })
             }
           >
             <Download className="h-4 w-4" /> Export
           </button>
           {isAdmin && (
             <>
-              <button className="btn-secondary" onClick={() => setImportOpen(true)}>
+              <button className="btn-secondary" onClick={() => setImportOpen(true)} disabled={!canWrite} title={!canWrite ? 'Select a specific pharmacy to import' : ''}>
                 <Upload className="h-4 w-4" /> Import Excel
               </button>
-              <button className="btn-secondary" onClick={() => setRolloverOpen(true)}>
+              <button className="btn-secondary" onClick={() => setRolloverOpen(true)} disabled={!canWrite} title={!canWrite ? 'Select a specific pharmacy to roll over' : ''}>
                 <CalendarRange className="h-4 w-4" /> Start New Month
               </button>
-              <button className="btn-primary" onClick={() => setAddOpen(true)} disabled={!isLatestPeriod && periods.length > 0}>
+              <button className="btn-primary" onClick={() => setAddOpen(true)} disabled={!canWrite || (!isLatestPeriod && periods.length > 0)}>
                 <Plus className="h-4 w-4" /> Add NDC
               </button>
             </>
@@ -224,49 +269,55 @@ export default function Accumulator() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-end gap-4">
-        <div>
-          <label className="label-text">Facility</label>
-          <select className="input-field" value={facilityId} onChange={(e) => setFacilityId(e.target.value)}>
-            {facilities.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.name}
-              </option>
-            ))}
-          </select>
+      <div className="card space-y-4 p-5">
+        <FacilityPharmacySelector includeAllFacilities={false} />
+        <div className="flex flex-wrap items-end gap-4">
+          <div>
+            <label className="label-text">Period</label>
+            <select
+              className="input-field"
+              value={period ? `${period.year}-${period.month}` : ''}
+              onChange={(e) => {
+                const [y, m] = e.target.value.split('-').map(Number);
+                setPeriod({ month: m, year: y });
+              }}
+            >
+              {periods.map((p) => (
+                <option key={`${p.year}-${p.month}`} value={`${p.year}-${p.month}`}>
+                  {MONTH_NAMES[p.month - 1]} {p.year}
+                </option>
+              ))}
+            </select>
+          </div>
+          {!isLatestPeriod && period && (
+            <span className="flex items-center gap-1.5 rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-500">
+              <Lock className="h-3.5 w-3.5" /> Historical period — read only
+            </span>
+          )}
+          {isAllPharmacies && (
+            <span className="flex items-center gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-sm text-warning">
+              <AlertTriangle className="h-3.5 w-3.5" /> Viewing all pharmacies — read only. Select one pharmacy to make changes.
+            </span>
+          )}
         </div>
-        <div>
-          <label className="label-text">Period</label>
-          <select
-            className="input-field"
-            value={period ? `${period.year}-${period.month}` : ''}
-            onChange={(e) => {
-              const [y, m] = e.target.value.split('-').map(Number);
-              setPeriod({ month: m, year: y });
-            }}
-          >
-            {periods.map((p) => (
-              <option key={`${p.year}-${p.month}`} value={`${p.year}-${p.month}`}>
-                {MONTH_NAMES[p.month - 1]} {p.year}
-              </option>
-            ))}
-          </select>
-        </div>
-        {!isLatestPeriod && period && (
-          <span className="flex items-center gap-1.5 rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-500">
-            <Lock className="h-3.5 w-3.5" /> Historical period — read only
-          </span>
-        )}
       </div>
+
+      <ScopeLabel period={period ? `${MONTH_NAMES[period.month - 1]} ${period.year}` : undefined} />
 
       {loading ? (
         <SkeletonTable rows={8} cols={10} />
       ) : !period ? (
         <EmptyState
-          title="No accumulator data yet"
-          message={isAdmin ? 'Start the first month for this facility to begin tracking inventory.' : 'Ask an administrator to start the first month for this facility.'}
+          title={isAllPharmacies ? 'No accumulator data yet' : `No accumulator records found for ${selectedPharmacy?.name ?? 'this pharmacy'}`}
+          message={
+            canWrite
+              ? 'Start the first month for this pharmacy to begin tracking inventory.'
+              : isAllPharmacies
+              ? 'Select a specific pharmacy to start its first accumulator month.'
+              : 'Ask an administrator to start the first month for this pharmacy.'
+          }
           action={
-            isAdmin && (
+            canWrite && (
               <button className="btn-primary" onClick={() => setRolloverOpen(true)}>
                 Start New Month
               </button>
@@ -278,38 +329,42 @@ export default function Accumulator() {
       )}
 
       <Modal open={Boolean(editingRow)} onClose={() => setEditingRow(null)} title={`Edit ${editingRow?.ndc ?? ''}`}>
-        {editingRow && <EditRowForm row={editingRow} onSave={handleSaveEdit} onCancel={() => setEditingRow(null)} saving={savingEdit} />}
+        {editingRow && (
+          <EditRowForm row={editingRow} onSave={handleSaveEdit} onDelete={handleDeleteRow} onCancel={() => setEditingRow(null)} saving={savingEdit} />
+        )}
       </Modal>
 
       <AddNdcModal
         open={addOpen}
         onClose={() => setAddOpen(false)}
-        facilityId={facilityId}
+        facilityId={selectedFacilityId}
+        pharmacyId={selectedPharmacyId}
         period={period}
         onAdded={async () => {
           setAddOpen(false);
-          const data = await fetchAccumulatorRows(facilityId, period.month, period.year);
-          setRows(data);
+          await refreshRows();
         }}
       />
 
       <ImportModal
         open={importOpen}
         onClose={() => setImportOpen(false)}
-        facilityId={facilityId}
+        facilityId={selectedFacilityId}
+        pharmacyId={selectedPharmacyId}
         period={period}
         onImported={async () => {
           setImportOpen(false);
-          const data = await fetchAccumulatorRows(facilityId, period.month, period.year);
-          setRows(data);
+          await refreshRows();
         }}
       />
 
       <RolloverModal
         open={rolloverOpen}
         onClose={() => setRolloverOpen(false)}
-        facilityId={facilityId}
+        facilityId={selectedFacilityId}
+        pharmacyId={selectedPharmacyId}
         facilityName={selectedFacility?.name}
+        pharmacyName={selectedPharmacy?.name}
         periods={periods}
         onRolledOver={async () => {
           setRolloverOpen(false);
@@ -320,7 +375,7 @@ export default function Accumulator() {
   );
 }
 
-function AddNdcModal({ open, onClose, facilityId, period, onAdded }) {
+function AddNdcModal({ open, onClose, facilityId, pharmacyId, period, onAdded }) {
   const toast = useToast();
   const [form, setForm] = useState({ ndc: '', productName: '', packSize: '', qtyOnHand: '', expDay: '', price340b: '', ppu340b: '', cin: '', manufacturer: '' });
   const [saving, setSaving] = useState(false);
@@ -339,6 +394,7 @@ function AddNdcModal({ open, onClose, facilityId, period, onAdded }) {
     try {
       await addAccumulatorRow({
         facilityId,
+        pharmacyId,
         month: period.month,
         year: period.year,
         ndc,
@@ -415,7 +471,7 @@ function AddNdcModal({ open, onClose, facilityId, period, onAdded }) {
   );
 }
 
-function ImportModal({ open, onClose, facilityId, period, onImported }) {
+function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported }) {
   const toast = useToast();
   const [parsed, setParsed] = useState(null);
   const [error, setError] = useState(null);
@@ -440,6 +496,7 @@ function ImportModal({ open, onClose, facilityId, period, onImported }) {
     try {
       const count = await importAccumulatorRows({
         facilityId,
+        pharmacyId,
         month: period.month,
         year: period.year,
         rows: parsed.rows.map((r) => ({
@@ -465,14 +522,23 @@ function ImportModal({ open, onClose, facilityId, period, onImported }) {
   }
 
   return (
-    <Modal open={open} onClose={() => { onClose(); setParsed(null); setError(null); }} title="Import Accumulator from Excel" wide>
+    <Modal
+      open={open}
+      onClose={() => {
+        onClose();
+        setParsed(null);
+        setError(null);
+      }}
+      title="Import Accumulator from Excel"
+      wide
+    >
       <input type="file" accept=".xlsx,.xls" onChange={handleFile} className="mb-4 block w-full text-sm" />
       {error && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-danger">{error}</div>}
       {parsed && (
         <>
           <p className="mb-2 text-sm text-gray-500">
-            {parsed.rows.length} valid rows parsed{parsed.skippedRows.length > 0 ? `, ${parsed.skippedRows.length} skipped` : ''}. Review before confirming — this will
-            upsert into the current period.
+            {parsed.rows.length} valid rows parsed{parsed.skippedRows.length > 0 ? `, ${parsed.skippedRows.length} skipped` : ''}. Review before
+            confirming — this will upsert into the current pharmacy&apos;s accumulator for this period.
           </p>
           <div className="max-h-72 overflow-auto rounded-lg border border-gray-100">
             <table className="w-full text-left text-xs">
@@ -511,7 +577,7 @@ function ImportModal({ open, onClose, facilityId, period, onImported }) {
   );
 }
 
-function RolloverModal({ open, onClose, facilityId, facilityName, periods, onRolledOver }) {
+function RolloverModal({ open, onClose, facilityId, pharmacyId, facilityName, pharmacyName, periods, onRolledOver }) {
   const toast = useToast();
   const [preview, setPreview] = useState([]);
   const [rollingOver, setRollingOver] = useState(false);
@@ -526,7 +592,7 @@ function RolloverModal({ open, onClose, facilityId, facilityName, periods, onRol
   useEffect(() => {
     async function loadPreview() {
       if (!open || !fromPeriod) return;
-      const rows = await fetchAccumulatorRows(facilityId, fromPeriod.month, fromPeriod.year);
+      const rows = await fetchAccumulatorRows(facilityId, pharmacyId, fromPeriod.month, fromPeriod.year);
       setPreview(
         rows.map((r) => ({
           ndc: r.ndc,
@@ -538,19 +604,20 @@ function RolloverModal({ open, onClose, facilityId, facilityName, periods, onRol
       );
     }
     loadPreview();
-  }, [open, facilityId, fromPeriod]);
+  }, [open, facilityId, pharmacyId, fromPeriod]);
 
   async function handleConfirm() {
     setRollingOver(true);
     try {
       const count = await rolloverMonth({
         facilityId,
+        pharmacyId,
         fromMonth: fromPeriod.month,
         fromYear: fromPeriod.year,
         toMonth: toPeriod.month,
         toYear: toPeriod.year,
       });
-      toast.success(`Rolled over ${count} rows into ${toPeriod.month}/${toPeriod.year}.`);
+      toast.success(`Rolled over ${count} rows into ${toPeriod.month}/${toPeriod.year} for ${pharmacyName}.`);
       onRolledOver();
     } catch (err) {
       toast.error(`Rollover failed: ${err.message}`);
@@ -560,18 +627,16 @@ function RolloverModal({ open, onClose, facilityId, facilityName, periods, onRol
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={`Start New Month — ${facilityName ?? ''}`} wide>
+    <Modal open={open} onClose={onClose} title={`Start New Month — ${facilityName ?? ''} → ${pharmacyName ?? ''}`} wide>
       {!fromPeriod ? (
         <p className="text-sm text-gray-500">
-          No prior accumulator exists for this facility. Use "Import Excel" instead to set up the first month's starting
-          balances.
+          No prior accumulator exists for {pharmacyName}. Use &quot;Import Excel&quot; instead to set up the first month&apos;s starting balances.
         </p>
       ) : (
         <>
           <p className="mb-3 text-sm text-gray-500">
-            This copies {preview.length} rows from {MONTH_NAMES[fromPeriod.month - 1]} {fromPeriod.year} into{' '}
-            {MONTH_NAMES[toPeriod.month - 1]} {toPeriod.year}, carrying forward ending Qty on Hand as the new starting
-            balance.
+            This copies {preview.length} rows from {MONTH_NAMES[fromPeriod.month - 1]} {fromPeriod.year} into {MONTH_NAMES[toPeriod.month - 1]}{' '}
+            {toPeriod.year} for {pharmacyName} only, carrying forward ending Qty on Hand as the new starting balance.
           </p>
           <div className="max-h-72 overflow-auto rounded-lg border border-gray-100">
             <table className="w-full text-left text-xs">

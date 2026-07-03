@@ -1,11 +1,10 @@
 import { supabase } from './supabaseClient.js';
 
-/** Distinct (month, year) periods on record for a facility, newest first. */
-export async function fetchPeriods(facilityId) {
-  const { data, error } = await supabase
-    .from('accumulator')
-    .select('month, year')
-    .eq('facility_id', facilityId);
+/** Distinct (month, year) periods on record for a facility+pharmacy, newest first. */
+export async function fetchPeriods(facilityId, pharmacyId) {
+  let query = supabase.from('accumulator').select('month, year').eq('facility_id', facilityId);
+  query = pharmacyId && pharmacyId !== 'all' ? query.eq('pharmacy_id', pharmacyId) : query;
+  const { data, error } = await query;
   if (error) throw error;
   const seen = new Set();
   const periods = [];
@@ -20,16 +19,19 @@ export async function fetchPeriods(facilityId) {
   return periods;
 }
 
-export async function fetchAccumulatorRows(facilityId, month, year) {
-  const { data, error } = await supabase
+/** Fetches accumulator rows for a facility+period, optionally scoped to one pharmacy. pharmacyId='all' returns every pharmacy's rows (read-only view), each still tagged with its own pharmacy. */
+export async function fetchAccumulatorRows(facilityId, pharmacyId, month, year) {
+  let query = supabase
     .from('accumulator')
-    .select('*')
+    .select('*, pharmacies(name)')
     .eq('facility_id', facilityId)
     .eq('month', month)
-    .eq('year', year)
-    .order('product_name');
+    .eq('year', year);
+  if (pharmacyId && pharmacyId !== 'all') query = query.eq('pharmacy_id', pharmacyId);
+  query = query.order('product_name');
+  const { data, error } = await query;
   if (error) throw error;
-  return data ?? [];
+  return (data ?? []).map((r) => ({ ...r, pharmacyName: r.pharmacies?.name ?? '—' }));
 }
 
 export async function editAccumulatorRow(row) {
@@ -47,9 +49,15 @@ export async function editAccumulatorRow(row) {
   if (error) throw error;
 }
 
-export async function addAccumulatorRow({ facilityId, month, year, ndc, productName, packSize, qtyOnHand, expDay, price340b, ppu340b, cin, manufacturer }) {
+export async function deleteAccumulatorRow(id) {
+  const { error } = await supabase.rpc('delete_accumulator_row', { p_id: id });
+  if (error) throw error;
+}
+
+export async function addAccumulatorRow({ facilityId, pharmacyId, month, year, ndc, productName, packSize, qtyOnHand, expDay, price340b, ppu340b, cin, manufacturer }) {
   const { data, error } = await supabase.rpc('add_accumulator_row', {
     p_facility_id: facilityId,
+    p_pharmacy_id: pharmacyId,
     p_month: month,
     p_year: year,
     p_ndc: ndc,
@@ -66,9 +74,10 @@ export async function addAccumulatorRow({ facilityId, month, year, ndc, productN
   return data;
 }
 
-export async function rolloverMonth({ facilityId, fromMonth, fromYear, toMonth, toYear }) {
+export async function rolloverMonth({ facilityId, pharmacyId, fromMonth, fromYear, toMonth, toYear }) {
   const { data, error } = await supabase.rpc('rollover_month', {
     p_facility_id: facilityId,
+    p_pharmacy_id: pharmacyId,
     p_from_month: fromMonth,
     p_from_year: fromYear,
     p_to_month: toMonth,
@@ -78,9 +87,10 @@ export async function rolloverMonth({ facilityId, fromMonth, fromYear, toMonth, 
   return data;
 }
 
-export async function importAccumulatorRows({ facilityId, month, year, rows }) {
+export async function importAccumulatorRows({ facilityId, pharmacyId, month, year, rows }) {
   const { data, error } = await supabase.rpc('import_accumulator_rows', {
     p_facility_id: facilityId,
+    p_pharmacy_id: pharmacyId,
     p_month: month,
     p_year: year,
     p_rows: rows,
