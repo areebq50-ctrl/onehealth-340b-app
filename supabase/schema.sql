@@ -1850,8 +1850,8 @@ grant execute on function public.delete_accumulator_period to authenticated;
 --
 -- Distinct from confirm_replenishment_order (one NDC, manual qty entry) —
 -- this takes a whole invoice's worth of already-matched
--- {accumulator_id, qty_received, unit_cost} lines (the frontend parses the
--- invoice PDF, computes qty_received = pack size x invoiced qty for each
+-- {accumulator_id, qty_ordered, unit_cost} lines (the frontend parses the
+-- invoice PDF, computes qty_ordered = pack size x invoiced qty for each
 -- line with decimal.js, and matches NDCs against the current accumulator
 -- before calling this), and applies every line atomically: any failure
 -- (e.g. a historical/closed period) rolls back every row this call would
@@ -1873,7 +1873,7 @@ declare
   v_user_id uuid := auth.uid();
   v_line jsonb;
   v_row record;
-  v_qty_received numeric;
+  v_order_qty numeric;
   v_unit_cost numeric;
   v_new_qty numeric;
   v_packs numeric;
@@ -1897,9 +1897,9 @@ begin
 
   for v_line in select * from jsonb_array_elements(p_lines)
   loop
-    v_qty_received := (v_line->>'qty_received')::numeric;
-    if v_qty_received is null or v_qty_received <= 0 then
-      raise exception 'qty_received must be a positive number for accumulator row %', v_line->>'accumulator_id';
+    v_order_qty := (v_line->>'qty_ordered')::numeric;
+    if v_order_qty is null or v_order_qty <= 0 then
+      raise exception 'qty_ordered must be a positive number for accumulator row %', v_line->>'accumulator_id';
     end if;
 
     select * into v_row
@@ -1917,9 +1917,9 @@ begin
     end if;
 
     v_unit_cost := nullif(v_line->>'unit_cost', '')::numeric;
-    v_new_qty := v_row.qty_on_hand + v_qty_received;
-    v_packs := case when v_row.pack_size is not null and v_row.pack_size <> 0 then v_qty_received / v_row.pack_size else null end;
-    v_cost := case when v_unit_cost is not null then v_qty_received * v_unit_cost else null end;
+    v_new_qty := v_row.qty_on_hand + v_order_qty;
+    v_packs := case when v_row.pack_size is not null and v_row.pack_size <> 0 then v_order_qty / v_row.pack_size else null end;
+    v_cost := case when v_unit_cost is not null then v_order_qty * v_unit_cost else null end;
     v_order_notes := coalesce(p_notes, '') || case when p_invoice_number is not null then ' (Invoice ' || p_invoice_number || ')' else '' end;
 
     update public.accumulator
@@ -1933,12 +1933,12 @@ begin
       (accumulator_id, ndc, product_name, facility_id, pharmacy_id, month, year, qty_ordered, packs_ordered, unit_cost_340b, total_cost, ordered_by, notes)
     values
       (v_row.id, v_row.ndc, v_row.product_name, v_row.facility_id, v_row.pharmacy_id, v_row.month, v_row.year,
-       v_qty_received, v_packs, v_unit_cost, v_cost, v_user_id, nullif(trim(v_order_notes), ''));
+       v_order_qty, v_packs, v_unit_cost, v_cost, v_user_id, nullif(trim(v_order_notes), ''));
 
     insert into public.accumulator_audit_log
       (user_id, claim_id, ndc, product_name, prior_qty, qty_dispensed, new_qty, reimbursement_amount, action_type, facility_id, pharmacy_id)
     values
-      (v_user_id, null, v_row.ndc, v_row.product_name, v_row.qty_on_hand, -v_qty_received, v_new_qty, null, 'order_received',
+      (v_user_id, null, v_row.ndc, v_row.product_name, v_row.qty_on_hand, -v_order_qty, v_new_qty, null, 'order_received',
        v_row.facility_id, v_row.pharmacy_id);
 
     v_count := v_count + 1;

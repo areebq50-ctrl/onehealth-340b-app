@@ -965,14 +965,17 @@ function ReceiveInvoiceModal({ open, onClose, facilityId, pharmacyId, currentRow
         reason = "NDC not found in this pharmacy's current accumulator period.";
       }
 
-      const qtyToAdd = status === 'ok' ? new Decimal(r.sizeNumeric).times(r.invoicedQty) : null;
-      const newBalance = status === 'ok' ? new Decimal(accRow.qty_on_hand ?? 0).plus(qtyToAdd) : null;
+      // "Order" = Pack Size x Invoiced Qty (what the pharmacy team calls the
+      // Order/Order Confirmed column). "New Balance" is the separate,
+      // resulting figure: Current Balance + Order — never the same number.
+      const orderQty = status === 'ok' ? new Decimal(r.sizeNumeric).times(r.invoicedQty) : null;
+      const newBalance = status === 'ok' ? new Decimal(accRow.qty_on_hand ?? 0).plus(orderQty) : null;
 
       return {
         ...r,
         accumulatorId: accRow?.id ?? null,
         currentBalance: accRow?.qty_on_hand ?? null,
-        qtyToAdd,
+        orderQty,
         newBalance,
         status,
         reason,
@@ -991,7 +994,7 @@ function ReceiveInvoiceModal({ open, onClose, facilityId, pharmacyId, currentRow
       const count = await receiveInvoiceBulk({
         facilityId,
         pharmacyId,
-        lines: validRows.map((r) => ({ accumulatorId: r.accumulatorId, qtyReceived: r.qtyToAdd.toNumber(), unitCost: r.unitPrice })),
+        lines: validRows.map((r) => ({ accumulatorId: r.accumulatorId, orderQty: r.orderQty.toNumber(), unitCost: r.unitPrice })),
         invoiceNumber: invoiceNumber || null,
       });
       toast.success(`Received ${count} NDC${count === 1 ? '' : 's'} into the accumulator.`);
@@ -1017,8 +1020,9 @@ function ReceiveInvoiceModal({ open, onClose, facilityId, pharmacyId, currentRow
       wide
     >
       <p className="mb-3 text-sm text-gray-500">
-        Upload a wholesaler invoice PDF (Cardinal Health &quot;invoiceReprint&quot; layout). For each line, the quantity added
-        to the running balance is <strong>Pack Size (SIZE column) &times; Invoiced Qty</strong> — never the invoiced qty alone.
+        Upload a wholesaler invoice PDF (Cardinal Health &quot;invoiceReprint&quot; layout). For each line, the{' '}
+        <strong>Order</strong> = Pack Size (SIZE column) &times; Invoiced Qty — never the invoiced qty alone. The{' '}
+        <strong>New Balance</strong> is a separate number: Current Balance + Order.
       </p>
       <input type="file" accept=".pdf" onChange={handleFile} className="mb-4 block w-full text-sm" />
       {error && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-danger">{error}</div>}
@@ -1043,7 +1047,7 @@ function ReceiveInvoiceModal({ open, onClose, facilityId, pharmacyId, currentRow
             <table className="w-full min-w-max text-left text-xs">
               <thead className="sticky top-0 bg-surface-alt">
                 <tr>
-                  {['NDC', 'Description', 'Size', 'Invoiced Qty', 'Qty to Add', 'Current Balance', 'New Balance', 'Status'].map((h) => (
+                  {['NDC', 'Description', 'Size', 'Invoiced Qty', 'Order', 'Current Balance', 'New Balance', 'Status'].map((h) => (
                     <th key={h} className="whitespace-nowrap px-3 py-2 font-semibold text-navy">
                       {h}
                     </th>
@@ -1057,7 +1061,7 @@ function ReceiveInvoiceModal({ open, onClose, facilityId, pharmacyId, currentRow
                     <td className="whitespace-nowrap px-3 py-1.5">{r.description}</td>
                     <td className="whitespace-nowrap px-3 py-1.5">{r.sizeRaw ?? '—'}</td>
                     <td className="whitespace-nowrap px-3 py-1.5">{r.invoicedQty ?? '—'}</td>
-                    <td className="whitespace-nowrap px-3 py-1.5 font-semibold">{r.qtyToAdd ? formatQty(r.qtyToAdd) : '—'}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5 font-semibold">{r.orderQty ? formatQty(r.orderQty) : '—'}</td>
                     <td className="whitespace-nowrap px-3 py-1.5">{r.currentBalance !== null ? formatQty(r.currentBalance) : '—'}</td>
                     <td className="whitespace-nowrap px-3 py-1.5">{r.newBalance ? formatQty(r.newBalance) : '—'}</td>
                     <td className="whitespace-nowrap px-3 py-1.5">

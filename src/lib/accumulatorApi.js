@@ -168,11 +168,14 @@ export async function confirmReplenishmentOrder({ accumulatorId, qtyOrdered, not
 
 /**
  * Bulk-applies an already-parsed, already-matched wholesaler invoice: each
- * line is {accumulatorId, qtyReceived, unitCost}. qtyReceived must already
- * be computed as Pack Size x Invoiced Qty via decimal.js by the caller —
- * this function does no arithmetic of its own, it only threads the
- * pre-computed numbers through to the RPC. Applied atomically; any failing
- * line (e.g. a closed historical period) rolls back the whole batch.
+ * line is {accumulatorId, orderQty, unitCost}. "Order" = Pack Size x
+ * Invoiced Qty, matching the pharmacy team's own terminology (their
+ * accumulator sheet's "Order"/"Order confirmed" column) — distinct from
+ * "New Balance", which is Current Balance + Order, computed server-side.
+ * orderQty must already be computed via decimal.js by the caller; this
+ * function does no arithmetic of its own, it only threads the pre-computed
+ * numbers through to the RPC. Applied atomically; any failing line (e.g. a
+ * closed historical period) rolls back the whole batch.
  */
 export async function receiveInvoiceBulk({ facilityId, pharmacyId, lines, invoiceNumber, notes }) {
   const { data, error } = await supabase.rpc('receive_invoice_bulk', {
@@ -180,7 +183,7 @@ export async function receiveInvoiceBulk({ facilityId, pharmacyId, lines, invoic
     p_pharmacy_id: pharmacyId,
     p_lines: lines.map((l) => ({
       accumulator_id: l.accumulatorId,
-      qty_received: l.qtyReceived,
+      qty_ordered: l.orderQty,
       unit_cost: l.unitCost ?? null,
     })),
     p_invoice_number: invoiceNumber ?? null,
