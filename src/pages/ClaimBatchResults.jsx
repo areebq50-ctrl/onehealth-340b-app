@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { AlertTriangle, Download, ArrowLeft, Eye, ClipboardList, Package, ScrollText, FileSpreadsheet, Wrench, Loader2, Trash2 } from 'lucide-react';
 import { fetchClaimDetail } from '../lib/dashboardApi.js';
 import { fetchClaimRawLines, fetchAuditLogByClaim, findAccumulatorRow, deleteClaim } from '../lib/claimsApi.js';
@@ -29,6 +29,7 @@ function StatCard({ label, value, tone = 'navy' }) {
 export default function ClaimBatchResults() {
   const { claimId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const toast = useToast();
   const { isAdmin } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -36,7 +37,7 @@ export default function ClaimBatchResults() {
   const [lineItems, setLineItems] = useState([]);
   const [rawLines, setRawLines] = useState([]);
   const [auditLog, setAuditLog] = useState([]);
-  const [tab, setTab] = useState('Overview');
+  const [tab, setTab] = useState(() => (TABS.includes(location.state?.tab) ? location.state.tab : 'Overview'));
   const [previewOpen, setPreviewOpen] = useState(false);
   const [resolveTarget, setResolveTarget] = useState(null);
   const [orderingId, setOrderingId] = useState(null);

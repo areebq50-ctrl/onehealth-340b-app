@@ -96,7 +96,26 @@ export default function ClaimSearch() {
     { key: 'distinct_rx_count', label: 'Distinct RX', sortable: true, render: (r) => r.distinct_rx_count ?? '—' },
     { key: 'distinct_ndc_count', label: 'Distinct NDC', sortable: true, render: (r) => r.distinct_ndc_count ?? '—' },
     { key: 'matched_count', label: 'Matched', sortable: true, render: (r) => r.matched_count ?? 0 },
-    { key: 'unmatched_count', label: 'Unmatched', sortable: true, render: (r) => r.unmatched_count ?? 0 },
+    {
+      key: 'unmatched_count',
+      label: 'Unmatched',
+      sortable: true,
+      render: (r) =>
+        r.unmatched_count > 0 ? (
+          <button
+            className="font-semibold text-danger hover:underline"
+            onClick={(e) => {
+              e.stopPropagation();
+              navigate(`/claims/${r.id}`, { state: { tab: 'Replenishment by NDC' } });
+            }}
+            title="View unmatched NDCs for this batch"
+          >
+            {r.unmatched_count}
+          </button>
+        ) : (
+          0
+        ),
+    },
     { key: 'total_reimbursement', label: 'Reimbursement', sortable: true, render: (r) => formatCurrency(r.total_reimbursement) },
     { key: 'status', label: 'Status', sortable: true, render: (r) => <span className="badge bg-green-50 text-success">{r.status}</span> },
     {

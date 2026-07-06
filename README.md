@@ -79,7 +79,7 @@ keeping the anon key secret.
 | `ANTHROPIC_API_KEY` | `claude-assistant` Edge Function only | **No** |
 | `SUPABASE_URL` | Edge Functions only | **No** |
 | `SUPABASE_SERVICE_ROLE_KEY` | Edge Functions only | **No** |
-| `CLAUDE_MODEL` (optional, defaults to `claude-sonnet-4-6`) | `claude-assistant` Edge Function | **No** |
+| `CLAUDE_MODEL` (optional, defaults to `claude-sonnet-5`) | `claude-assistant` Edge Function | **No** |
 
 ## 4. Run locally
 
