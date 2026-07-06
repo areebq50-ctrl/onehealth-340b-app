@@ -4,7 +4,7 @@ values ('Heartland', 'HRTLD', 'Default facility')
 on conflict (short_code) do nothing;
 
 insert into public.pharmacies (name)
-select 'Lawrence Hause' where not exists (select 1 from public.pharmacies where name = 'Lawrence Hause');
+select 'Lawrence House' where not exists (select 1 from public.pharmacies where name = 'Lawrence House');
 insert into public.pharmacies (name)
 select 'Blue Swan' where not exists (select 1 from public.pharmacies where name = 'Blue Swan');
 insert into public.pharmacies (name)
@@ -14,5 +14,5 @@ insert into public.pharmacy_facilities (pharmacy_id, facility_id)
 select p.id, f.id
 from public.pharmacies p, public.facilities f
 where f.short_code = 'HRTLD'
-  and p.name in ('Lawrence Hause', 'Blue Swan', 'Third Coast')
+  and p.name in ('Lawrence House', 'Blue Swan', 'Third Coast')
 on conflict do nothing;

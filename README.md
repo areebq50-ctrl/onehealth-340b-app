@@ -26,7 +26,7 @@ and quantity math.
    need to reapply it). See "Pharmacy scoping" below for why pharmacy-level
    scoping matters.
 3. Run `supabase/seed.sql` to create the default facility (Heartland) and
-   pharmacies (Lawrence Hause, Blue Swan, Third Coast).
+   pharmacies (Lawrence House, Blue Swan, Third Coast).
 4. In **Authentication → Providers**, ensure Email is enabled.
 5. Create your first admin user:
    - Add the user via **Authentication → Users → Add User** (or have them
@@ -142,7 +142,7 @@ The app runs at `http://localhost:5173`.
 
 Every accumulator row, claim, audit log entry, and report belongs to
 exactly one pharmacy — a Blue Swan claim can never deduct from Lawrence
-Hause's inventory even for the same NDC on the same day. This is enforced
+House's inventory even for the same NDC on the same day. This is enforced
 at every layer, not just in the UI:
 
 - **Schema**: `accumulator` is keyed on `(ndc, facility_id, pharmacy_id, month, year)`.
@@ -153,7 +153,7 @@ at every layer, not just in the UI:
   `pharmacy_id` and only ever read/write that pharmacy's rows.
 - **RLS**: direct writes to `accumulator` are blocked outside the latest
   period *for that specific pharmacy* — a closed month for Blue Swan stays
-  closed even if Lawrence Hause is still open.
+  closed even if Lawrence House is still open.
 - **Frontend**: `FacilityContext` (`src/context/FacilityContext.jsx`) is the
   single source of truth for the selected facility/pharmacy across every
   page, persisted to `localStorage`. Changing facility clears an

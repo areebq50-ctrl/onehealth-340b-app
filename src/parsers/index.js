@@ -1,11 +1,11 @@
-import { parseLawrenceHausePdf } from './lawrenceHause.js';
+import { parseLawrenceHousePdf } from './lawrenceHouse.js';
 import { parseBlueSwanPdf } from './blueSwan.js';
 import { parseThirdCoastPdf } from './thirdCoast.js';
 import { parsePharmacyPdfGeneric } from './genericPdfHeuristics.js';
 
 /** Maps a pharmacy name (as stored in public.pharmacies.name) to its PDF parser module. */
 const PHARMACY_PDF_PARSERS = {
-  'Lawrence Hause': parseLawrenceHausePdf,
+  'Lawrence House': parseLawrenceHousePdf,
   'Blue Swan': parseBlueSwanPdf,
   'Third Coast': parseThirdCoastPdf,
 };

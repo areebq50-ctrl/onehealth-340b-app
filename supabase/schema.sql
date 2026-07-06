@@ -1633,3 +1633,82 @@ grant select, insert, update, delete on all tables in schema public to authentic
 grant usage, select on all sequences in schema public to authenticated;
 alter default privileges in schema public grant select, insert, update, delete on tables to authenticated;
 alter default privileges in schema public grant usage, select on sequences to authenticated;
+
+-- ============================================================================
+-- PATCH: fix "Lawrence Hause" -> "Lawrence House" (was misspelled in the
+-- original seed data). One-time, idempotent — a no-op once already renamed.
+-- ============================================================================
+update public.pharmacies set name = 'Lawrence House' where name = 'Lawrence Hause';
+
+-- ============================================================================
+-- PATCH: pharmacy CRUD for Settings — rename a pharmacy and/or replace its
+-- facility associations atomically, or delete a pharmacy outright. Admin
+-- only. Deleting is blocked (not silently allowed) if the pharmacy already
+-- has accumulator, claims, or order history — that data is never discarded
+-- as a side effect of a Settings-page cleanup action.
+-- ============================================================================
+create or replace function public.update_pharmacy(
+  p_id uuid,
+  p_name text,
+  p_facility_ids uuid[]
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins may edit pharmacies';
+  end if;
+
+  if p_name is null or trim(p_name) = '' then
+    raise exception 'Pharmacy name cannot be empty';
+  end if;
+
+  if exists (select 1 from public.pharmacies where id <> p_id and lower(trim(name)) = lower(trim(p_name))) then
+    raise exception 'A pharmacy named "%" already exists', trim(p_name);
+  end if;
+
+  update public.pharmacies set name = trim(p_name) where id = p_id;
+  if not found then
+    raise exception 'Pharmacy % not found', p_id;
+  end if;
+
+  delete from public.pharmacy_facilities where pharmacy_id = p_id;
+  if p_facility_ids is not null and array_length(p_facility_ids, 1) > 0 then
+    insert into public.pharmacy_facilities (pharmacy_id, facility_id)
+    select p_id, unnest(p_facility_ids)
+    on conflict do nothing;
+  end if;
+end;
+$$;
+
+revoke all on function public.update_pharmacy from public;
+grant execute on function public.update_pharmacy to authenticated;
+
+create or replace function public.delete_pharmacy(p_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins may delete pharmacies';
+  end if;
+
+  if exists (select 1 from public.accumulator where pharmacy_id = p_id)
+     or exists (select 1 from public.claims where pharmacy_id = p_id)
+     or exists (select 1 from public.accumulator_orders where pharmacy_id = p_id)
+  then
+    raise exception 'Cannot delete this pharmacy — it already has accumulator, claims, or order history. That data is never silently discarded.';
+  end if;
+
+  delete from public.pharmacy_facilities where pharmacy_id = p_id;
+  delete from public.pharmacies where id = p_id;
+end;
+$$;
+
+revoke all on function public.delete_pharmacy from public;
+grant execute on function public.delete_pharmacy to authenticated;

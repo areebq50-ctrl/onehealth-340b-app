@@ -32,7 +32,12 @@ export async function addFacility({ name, shortCode, notes }) {
 }
 
 export async function addPharmacy({ name, facilityIds }) {
-  const { data: pharmacy, error } = await supabase.from('pharmacies').insert({ name }).select().single();
+  const trimmed = name.trim();
+  const { data: existing, error: checkErr } = await supabase.from('pharmacies').select('id').ilike('name', trimmed).maybeSingle();
+  if (checkErr) throw checkErr;
+  if (existing) throw new Error(`A pharmacy named "${trimmed}" already exists.`);
+
+  const { data: pharmacy, error } = await supabase.from('pharmacies').insert({ name: trimmed }).select().single();
   if (error) throw error;
 
   if (facilityIds.length > 0) {
@@ -42,4 +47,24 @@ export async function addPharmacy({ name, facilityIds }) {
     if (linkErr) throw linkErr;
   }
   return pharmacy;
+}
+
+/** Renames a pharmacy and replaces its facility associations, atomically, via RPC (admin-only). */
+export async function updatePharmacy({ id, name, facilityIds }) {
+  const { error } = await supabase.rpc('update_pharmacy', {
+    p_id: id,
+    p_name: name,
+    p_facility_ids: facilityIds,
+  });
+  if (error) throw error;
+}
+
+/**
+ * Deletes a pharmacy outright (admin-only). Blocked server-side — not
+ * silently allowed — if the pharmacy already has accumulator, claims, or
+ * order history, so real data is never discarded as a side effect.
+ */
+export async function deletePharmacy(id) {
+  const { error } = await supabase.rpc('delete_pharmacy', { p_id: id });
+  if (error) throw error;
 }

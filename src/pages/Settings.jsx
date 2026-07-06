@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Loader2, UserPlus, Building2, Store, ToggleLeft, ToggleRight } from 'lucide-react';
+import { Loader2, UserPlus, Building2, Store, ToggleLeft, ToggleRight, Pencil, Trash2 } from 'lucide-react';
 import { useFacility } from '../context/FacilityContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
-import { fetchUsers, updateUserRole, setUserActive, inviteUser, addFacility, addPharmacy } from '../lib/settingsApi.js';
+import { fetchUsers, updateUserRole, setUserActive, inviteUser, addFacility, addPharmacy, updatePharmacy, deletePharmacy } from '../lib/settingsApi.js';
 import { SkeletonTable } from '../components/common/Skeleton.jsx';
 
 function UsersPanel() {
@@ -190,6 +190,112 @@ function FacilitiesPanel() {
   );
 }
 
+function FacilityCheckboxes({ facilities, selected, onToggle }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {facilities.map((f) => (
+        <label
+          key={f.id}
+          className={`badge cursor-pointer border ${selected.includes(f.id) ? 'border-teal bg-teal-50 text-teal-700' : 'border-gray-200 text-gray-500'}`}
+        >
+          <input type="checkbox" className="mr-1.5" checked={selected.includes(f.id)} onChange={() => onToggle(f.id)} />
+          {f.name}
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function PharmacyRow({ pharmacy, facilities, onSaved }) {
+  const toast = useToast();
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(pharmacy.name);
+  const [selectedFacilities, setSelectedFacilities] = useState((pharmacy.pharmacy_facilities ?? []).map((pf) => pf.facility_id));
+  const [saving, setSaving] = useState(false);
+
+  function toggleFacility(id) {
+    setSelectedFacilities((prev) => (prev.includes(id) ? prev.filter((f) => f !== id) : [...prev, id]));
+  }
+
+  function startEdit() {
+    setName(pharmacy.name);
+    setSelectedFacilities((pharmacy.pharmacy_facilities ?? []).map((pf) => pf.facility_id));
+    setEditing(true);
+  }
+
+  async function handleSave() {
+    if (!name.trim()) {
+      toast.error('Pharmacy name cannot be empty.');
+      return;
+    }
+    setSaving(true);
+    try {
+      await updatePharmacy({ id: pharmacy.id, name: name.trim(), facilityIds: selectedFacilities });
+      toast.success('Pharmacy updated.');
+      setEditing(false);
+      await onSaved();
+    } catch (err) {
+      toast.error(`Update failed: ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!window.confirm(`Delete pharmacy "${pharmacy.name}"? This cannot be undone.`)) return;
+    setSaving(true);
+    try {
+      await deletePharmacy(pharmacy.id);
+      toast.success('Pharmacy deleted.');
+      await onSaved();
+    } catch (err) {
+      toast.error(`Delete failed: ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (editing) {
+    return (
+      <div className="space-y-3 px-4 py-3 text-sm">
+        <input className="input-field" value={name} onChange={(e) => setName(e.target.value)} placeholder="Pharmacy name" />
+        <FacilityCheckboxes facilities={facilities} selected={selectedFacilities} onToggle={toggleFacility} />
+        <div className="flex justify-end gap-2">
+          <button className="btn-secondary" onClick={() => setEditing(false)} disabled={saving}>
+            Cancel
+          </button>
+          <button className="btn-primary" onClick={handleSave} disabled={saving}>
+            {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+            Save
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
+      <div className="min-w-0">
+        <span className="font-medium text-navy">{pharmacy.name}</span>
+        <span className="ml-2 text-gray-500">
+          {(pharmacy.pharmacy_facilities ?? [])
+            .map((pf) => facilities.find((f) => f.id === pf.facility_id)?.name)
+            .filter(Boolean)
+            .join(', ') || 'No facilities linked'}
+        </span>
+      </div>
+      <div className="flex flex-shrink-0 items-center gap-1.5">
+        <button className="btn-secondary px-2 py-1" onClick={startEdit} disabled={saving} title="Rename / edit facilities">
+          <Pencil className="h-3.5 w-3.5" />
+        </button>
+        <button className="btn-secondary px-2 py-1 text-danger" onClick={handleDelete} disabled={saving} title="Delete pharmacy">
+          {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function PharmaciesPanel() {
   const { facilities, pharmacies, refresh } = useFacility();
   const toast = useToast();
@@ -222,16 +328,9 @@ function PharmaciesPanel() {
     <div className="card p-6">
       <h2 className="mb-4 text-base font-semibold text-navy">Pharmacies</h2>
       <div className="mb-4 divide-y divide-gray-100 rounded-lg border border-gray-100">
+        {pharmacies.length === 0 && <p className="px-4 py-3 text-sm text-gray-400">No pharmacies yet.</p>}
         {pharmacies.map((p) => (
-          <div key={p.id} className="flex items-center justify-between px-4 py-2.5 text-sm">
-            <span className="font-medium text-navy">{p.name}</span>
-            <span className="text-gray-500">
-              {(p.pharmacy_facilities ?? [])
-                .map((pf) => facilities.find((f) => f.id === pf.facility_id)?.name)
-                .filter(Boolean)
-                .join(', ') || 'No facilities linked'}
-            </span>
-          </div>
+          <PharmacyRow key={p.id} pharmacy={p} facilities={facilities} onSaved={refresh} />
         ))}
       </div>
       <form onSubmit={handleAdd} className="space-y-3">
@@ -247,14 +346,7 @@ function PharmaciesPanel() {
         </div>
         <div>
           <label className="label-text">Associated Facilities</label>
-          <div className="flex flex-wrap gap-2">
-            {facilities.map((f) => (
-              <label key={f.id} className={`badge cursor-pointer border ${selectedFacilities.includes(f.id) ? 'border-teal bg-teal-50 text-teal-700' : 'border-gray-200 text-gray-500'}`}>
-                <input type="checkbox" className="mr-1.5" checked={selectedFacilities.includes(f.id)} onChange={() => toggleFacility(f.id)} />
-                {f.name}
-              </label>
-            ))}
-          </div>
+          <FacilityCheckboxes facilities={facilities} selected={selectedFacilities} onToggle={toggleFacility} />
         </div>
       </form>
     </div>
