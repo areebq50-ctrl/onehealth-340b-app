@@ -19,16 +19,16 @@ and quantity math.
 ## 2. Set up Supabase
 
 1. Create a new Supabase project.
-2. In the Supabase SQL Editor, run `supabase/schema.sql` — this creates the
-   baseline tables, RLS policies, and RPC functions.
-3. Run **every file in `supabase/migrations/` in filename order** (0001
-   through 0006) — these are not optional. They add pharmacy-level scoping
-   to the accumulator (the baseline schema is facility-only) and the
-   RX-level claim ledger. See "Pharmacy scoping" below for why this matters.
-4. Run `supabase/seed.sql` to create the default facility (Heartland) and
+2. In the Supabase SQL Editor, run `supabase/schema.sql` — this is the
+   single consolidated source of truth: all tables (including the
+   pharmacy-scoped accumulator and RX-level claim ledger), RLS policies, and
+   RPC functions. It's idempotent (safe to re-run on the same project if you
+   need to reapply it). See "Pharmacy scoping" below for why pharmacy-level
+   scoping matters.
+3. Run `supabase/seed.sql` to create the default facility (Heartland) and
    pharmacies (Lawrence Hause, Blue Swan, Third Coast).
-5. In **Authentication → Providers**, ensure Email is enabled.
-6. Create your first admin user:
+4. In **Authentication → Providers**, ensure Email is enabled.
+5. Create your first admin user:
    - Add the user via **Authentication → Users → Add User** (or have them
      sign up). A `public.users` row is auto-created with `role='regular'`
      via a database trigger.
@@ -36,7 +36,7 @@ and quantity math.
      ```sql
      update public.users set role = 'admin' where email = 'you@onehealthpartners.com';
      ```
-7. Deploy the Edge Functions (see below) and set their secrets.
+6. Deploy the Edge Functions (see below) and set their secrets.
 
 ### Deploying Edge Functions
 
@@ -212,9 +212,8 @@ src/
     files/                 ExcelPreviewModal
   context/                Auth, Facility (facility+pharmacy scope), Toast
 supabase/
-  schema.sql              baseline tables, RLS policies, RPC functions
-  migrations/              0001-0006: pharmacy scoping + RX-level ledger — see
-                          each file's header comment for what it does and why
+  schema.sql              consolidated tables, RLS policies, RPC functions
+                          (single source of truth — idempotent, safe to re-run)
   seed.sql                 default facility/pharmacies
   functions/
     claude-assistant/      AI Assistant Edge Function
