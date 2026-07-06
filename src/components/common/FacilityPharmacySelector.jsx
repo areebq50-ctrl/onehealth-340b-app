@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useFacility } from '../../context/FacilityContext.jsx';
 
 /**
@@ -9,6 +10,21 @@ import { useFacility } from '../../context/FacilityContext.jsx';
 export default function FacilityPharmacySelector({ includeAllFacilities = true, className = '' }) {
   const { facilities, pharmaciesForSelectedFacility, selectedFacilityId, setSelectedFacilityId, selectedPharmacyId, setSelectedPharmacyId } =
     useFacility();
+
+  // Pages that pass includeAllFacilities={false} (Upload Claims, Accumulator,
+  // Reports) never render an "All Facilities" <option> — but the shared
+  // scope can still default to 'all' (e.g. a first-ever visit, or coming
+  // from a page that does allow "all"). A <select value="all"> with no
+  // matching option just silently shows the first real facility while
+  // React's actual state stays stuck at 'all', which in turn keeps the
+  // Pharmacy dropdown disabled and blocks every write action — with no
+  // visible sign anything is wrong. Auto-select the first real facility
+  // here so the visible selection and the actual scope state always agree.
+  useEffect(() => {
+    if (!includeAllFacilities && selectedFacilityId === 'all' && facilities.length > 0) {
+      setSelectedFacilityId(facilities[0].id);
+    }
+  }, [includeAllFacilities, selectedFacilityId, facilities, setSelectedFacilityId]);
 
   return (
     <div className={`flex flex-wrap items-end gap-4 ${className}`}>
