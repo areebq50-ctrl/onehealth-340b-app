@@ -96,6 +96,12 @@ export function parseAccumulatorXlsx(arrayBuffer) {
       productName: String(row[colIndex.productName] ?? '').trim() || '(unnamed)',
       packSize: colIndex.packSize >= 0 ? toDecimal(row[colIndex.packSize])?.toString() ?? null : null,
       qtyOnHand: qtyOnHand.toString(),
+      // A TRUE starting balance is a physical count and should essentially
+      // never be negative — a negative qty_on_hand only ever makes sense as
+      // a DERIVED "new balance" after dispensing exceeds supply, never as an
+      // imported starting figure. Flagged (not excluded) so the import
+      // preview can surface it instead of silently importing a sign error.
+      negativeQty: qtyOnHand.isNegative(),
       expDay: colIndex.expDay >= 0 ? normalizeExcelDateCell(row[colIndex.expDay]) : null,
       price340b: colIndex.price340b >= 0 ? toDecimal(row[colIndex.price340b])?.toString() ?? null : null,
       ppu340b: colIndex.ppu340b >= 0 ? toDecimal(row[colIndex.ppu340b])?.toString() ?? null : null,

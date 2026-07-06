@@ -80,6 +80,15 @@ export default function UnmatchedNdcModal({ open, onClose, lineItem, onResolved 
       toast.error('Product Name and a non-zero Pack Size are required.');
       return;
     }
+    // A starting balance is a physical count and should almost never be
+    // negative — confirm explicitly rather than silently seeding a
+    // brand-new accumulator row with an already-wrong sign.
+    if (form.qtyOnHand !== '' && Number(form.qtyOnHand) < 0) {
+      const confirmed = window.confirm(
+        `Starting Qty on Hand is negative (${form.qtyOnHand}). A starting balance should almost never be negative — double-check before continuing. Add it anyway?`
+      );
+      if (!confirmed) return;
+    }
     setSaving(true);
     try {
       await resolveUnmatchedLine({

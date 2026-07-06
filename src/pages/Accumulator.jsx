@@ -557,6 +557,15 @@ function AddNdcModal({ open, onClose, facilityId, pharmacyId, period, onAdded })
       toast.error(`"${form.ndc}" is not a valid NDC.`);
       return;
     }
+    // A starting balance is a physical count and should almost never be
+    // negative — only ever confirm past this if the admin has actually
+    // checked the source and means it, not because of a bad import/typo.
+    if (Number(form.qtyOnHand) < 0) {
+      const confirmed = window.confirm(
+        `Starting Qty on Hand is negative (${form.qtyOnHand}). A starting balance should almost never be negative — double-check the source before continuing. Add it anyway?`
+      );
+      if (!confirmed) return;
+    }
     setSaving(true);
     try {
       await addAccumulatorRow({
@@ -674,12 +683,14 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
   // current month/year instead of crashing, and let the admin correct it.
   const [month, setMonth] = useState(period?.month ?? now.getMonth() + 1);
   const [year, setYear] = useState(period?.year ?? now.getFullYear());
+  const [acknowledgedNegatives, setAcknowledgedNegatives] = useState(false);
 
   async function handleFile(e) {
     const file = e.target.files?.[0];
     if (!file) return;
     const buf = await file.arrayBuffer();
     const result = parseAccumulatorXlsx(buf);
+    setAcknowledgedNegatives(false);
     if (result.error) {
       setError(result.error);
       setParsed(null);
@@ -688,6 +699,8 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
       setParsed(result);
     }
   }
+
+  const negativeRows = parsed?.rows.filter((r) => r.negativeQty) ?? [];
 
   async function handleConfirm() {
     setImporting(true);
@@ -765,6 +778,22 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
             {parsed.rows.length} valid rows parsed{parsed.skippedRows.length > 0 ? `, ${parsed.skippedRows.length} skipped` : ''}. Review before
             confirming — this will upsert into {MONTH_NAMES[month - 1]} {year} for this pharmacy.
           </p>
+          {negativeRows.length > 0 && (
+            <div className="mb-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-danger">
+              <p className="font-semibold">
+                {negativeRows.length} row{negativeRows.length > 1 ? 's have' : ' has'} a NEGATIVE starting Qty on Hand (highlighted below).
+              </p>
+              <p className="mt-1">
+                A starting balance is a physical count and should almost never be negative — double-check the source file&apos;s
+                column before importing. Negative starting balances silently compound: every claim against that NDC will subtract
+                further, deepening an already-wrong number.
+              </p>
+              <label className="mt-2 flex items-center gap-2 font-medium">
+                <input type="checkbox" checked={acknowledgedNegatives} onChange={(e) => setAcknowledgedNegatives(e.target.checked)} />
+                I&apos;ve verified these negative values are correct, not a data error.
+              </label>
+            </div>
+          )}
           <div className="max-h-72 overflow-auto rounded-lg border border-gray-100">
             <table className="w-full text-left text-xs">
               <thead className="sticky top-0 bg-surface-alt">
@@ -777,10 +806,10 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
               </thead>
               <tbody>
                 {parsed.rows.slice(0, 50).map((r, i) => (
-                  <tr key={i} className={i % 2 ? 'bg-surface-alt' : 'bg-white'}>
+                  <tr key={i} className={`${i % 2 ? 'bg-surface-alt' : 'bg-white'} ${r.negativeQty ? 'bg-red-50/60' : ''}`}>
                     <td className="px-3 py-1.5 font-mono">{r.ndc}</td>
                     <td className="px-3 py-1.5">{r.productName}</td>
-                    <td className="px-3 py-1.5">{r.qtyOnHand}</td>
+                    <td className={`px-3 py-1.5 ${r.negativeQty ? 'font-semibold text-danger' : ''}`}>{r.qtyOnHand}</td>
                     <td className="px-3 py-1.5">{r.ppu340b ?? '—'}</td>
                   </tr>
                 ))}
@@ -791,7 +820,11 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
             <button className="btn-secondary" onClick={onClose} disabled={importing}>
               Cancel
             </button>
-            <button className="btn-primary" onClick={handleConfirm} disabled={importing}>
+            <button
+              className="btn-primary"
+              onClick={handleConfirm}
+              disabled={importing || (negativeRows.length > 0 && !acknowledgedNegatives)}
+            >
               {importing && <Loader2 className="h-4 w-4 animate-spin" />}
               Confirm Import
             </button>
