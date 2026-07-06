@@ -1,15 +1,17 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { AlertTriangle, Download, ArrowLeft, Eye, ClipboardList, Package, ScrollText, FileSpreadsheet } from 'lucide-react';
+import { AlertTriangle, Download, ArrowLeft, Eye, ClipboardList, Package, ScrollText, FileSpreadsheet, Wrench, Loader2 } from 'lucide-react';
 import { fetchClaimDetail } from '../lib/dashboardApi.js';
-import { fetchClaimRawLines, fetchAuditLogByClaim } from '../lib/claimsApi.js';
-import { formatCurrency, formatQty, packsToOrder, Decimal } from '../lib/calculations.js';
+import { fetchClaimRawLines, fetchAuditLogByClaim, findAccumulatorRow } from '../lib/claimsApi.js';
+import { confirmReplenishmentOrder } from '../lib/accumulatorApi.js';
+import { formatCurrency, formatQty, packsToOrder, signedPacksToOrder, Decimal } from '../lib/calculations.js';
 import { exportDailyClaims, exportReplenishmentReport, exportProcessedWorkbook } from '../lib/excelExport.js';
 import { useToast } from '../context/ToastContext.jsx';
 import { SkeletonTable } from '../components/common/Skeleton.jsx';
 import EmptyState from '../components/common/EmptyState.jsx';
 import DataTable from '../components/common/DataTable.jsx';
 import ExcelPreviewModal from '../components/files/ExcelPreviewModal.jsx';
+import UnmatchedNdcModal from '../components/claims/UnmatchedNdcModal.jsx';
 
 const TABS = ['Overview', 'All Claims', 'Replenishment by NDC', 'Accumulator Changes & Audit'];
 
@@ -34,34 +36,32 @@ export default function ClaimBatchResults() {
   const [auditLog, setAuditLog] = useState([]);
   const [tab, setTab] = useState('Overview');
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [resolveTarget, setResolveTarget] = useState(null);
+  const [orderingId, setOrderingId] = useState(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      setLoading(true);
-      try {
-        const [{ claim: c, lineItems: li }, raw, audit] = await Promise.all([
-          fetchClaimDetail(claimId),
-          fetchClaimRawLines(claimId),
-          fetchAuditLogByClaim(claimId),
-        ]);
-        if (cancelled) return;
-        setClaim(c);
-        setLineItems(li);
-        setRawLines(raw);
-        setAuditLog(audit);
-      } catch (err) {
-        if (!cancelled) toast.error(`Failed to load claim batch: ${err.message}`);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [{ claim: c, lineItems: li }, raw, audit] = await Promise.all([
+        fetchClaimDetail(claimId),
+        fetchClaimRawLines(claimId),
+        fetchAuditLogByClaim(claimId),
+      ]);
+      setClaim(c);
+      setLineItems(li);
+      setRawLines(raw);
+      setAuditLog(audit);
+    } catch (err) {
+      toast.error(`Failed to load claim batch: ${err.message}`);
+    } finally {
+      setLoading(false);
     }
-    load();
-    return () => {
-      cancelled = true;
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [claimId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const replenishment = useMemo(() => {
     return lineItems
@@ -78,6 +78,7 @@ export default function ClaimBatchResults() {
           packSize: li.pack_size,
           qtyBefore: li.qty_before,
           qtyAfter: li.qty_after,
+          price340b: li.price_340b,
           shortage: r.shortage,
           exactPacks: r.exactPacks,
           recommendedPacks: r.recommendedPacks,
@@ -86,6 +87,66 @@ export default function ClaimBatchResults() {
         };
       });
   }, [lineItems, rawLines]);
+
+  // Daily results — every NDC from this claim, matched or not, with the
+  // exact 13-column spec: NDC | Product Name | Pack Size | Starting Balance
+  // | Qty Dispensed Today | New Balance | Packs to Order | 340B PPU |
+  // Reimbursement Owed | CIN | Manufacturer | Expiry Date | Status.
+  const dailyResults = useMemo(() => {
+    return lineItems.map((li) => {
+      if (!li.matched) {
+        return {
+          lineItemId: li.id,
+          ndc: li.ndc,
+          productName: li.product_name,
+          packSize: null,
+          startingBalance: null,
+          qtyDispensedToday: li.qty_dispensed,
+          newBalance: null,
+          signed: null,
+          ppu340b: null,
+          reimbursementOwed: null,
+          cin: null,
+          manufacturer: null,
+          expDay: null,
+          matched: false,
+          skipReason: li.skip_reason,
+          status: li.skip_reason ? 'skipped' : 'unmatched',
+        };
+      }
+      const s = signedPacksToOrder(li.qty_after, li.pack_size);
+      const status = s.flagged ? 'unmatched' : s.value.gt(0) ? 'red' : 'green';
+      return {
+        lineItemId: li.id,
+        ndc: li.ndc,
+        productName: li.product_name,
+        packSize: li.pack_size,
+        startingBalance: li.qty_before,
+        qtyDispensedToday: li.qty_dispensed,
+        newBalance: li.qty_after,
+        signed: s.value,
+        ppu340b: li.ppu_340b,
+        reimbursementOwed: li.reimbursement_owed,
+        cin: li.cin,
+        manufacturer: li.manufacturer,
+        expDay: li.exp_day,
+        matched: true,
+        skipReason: null,
+        status,
+      };
+    });
+  }, [lineItems]);
+
+  const orderPanelRows = useMemo(
+    () =>
+      replenishment
+        .filter((r) => r.recommendedPacks?.gt?.(0))
+        .map((r) => ({
+          ...r,
+          totalOrderCost: r.price340b !== null && r.price340b !== undefined ? r.recommendedPacks.times(r.price340b) : null,
+        })),
+    [replenishment]
+  );
 
   const replenishmentTotals = useMemo(() => {
     const totalRecommendedPacks = replenishment.reduce(
@@ -189,6 +250,18 @@ export default function ClaimBatchResults() {
             tabs for the full breakdown. Total packages above is for operational convenience only; the NDC-by-NDC list in Replenishment is the
             authoritative requirement (packages from different NDCs are not interchangeable).
           </p>
+          {claim.unmatched_count > 0 && (
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-warning">
+              <span className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4" />
+                {claim.unmatched_count} NDC{claim.unmatched_count > 1 ? 's' : ''} still need review — every unmatched NDC must be
+                added, matched, or explicitly skipped with a reason.
+              </span>
+              <button className="btn-secondary" onClick={() => setTab('Replenishment by NDC')}>
+                <Wrench className="h-4 w-4" /> Review Now
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -198,7 +271,13 @@ export default function ClaimBatchResults() {
 
       {tab === 'Replenishment by NDC' && (
         <ReplenishmentTab
-          rows={replenishment}
+          dailyResults={dailyResults}
+          orderPanelRows={orderPanelRows}
+          orderingId={orderingId}
+          setOrderingId={setOrderingId}
+          onResolveClick={(lineItemId) => setResolveTarget(lineItems.find((li) => li.id === lineItemId))}
+          onOrderConfirmed={load}
+          claim={claim}
           onExport={() =>
             exportReplenishmentReport(replenishment, {
               facilityName: claim.facilities?.name,
@@ -222,6 +301,13 @@ export default function ClaimBatchResults() {
           claimDate: claim.claim_date,
           uploadedAt: new Date(claim.uploaded_at).toLocaleString(),
         }}
+      />
+
+      <UnmatchedNdcModal
+        open={Boolean(resolveTarget)}
+        onClose={() => setResolveTarget(null)}
+        lineItem={resolveTarget}
+        onResolved={load}
       />
     </div>
   );
@@ -269,52 +355,185 @@ function AllClaimsTab({ rows }) {
   );
 }
 
-function ReplenishmentTab({ rows, onExport }) {
-  if (rows.length === 0) {
-    return <EmptyState icon={Package} title="No replenishment data is available for this claim batch" message="No matched NDCs were dispensed in this batch." />;
+const STATUS_BADGE = {
+  green: <span className="badge bg-green-50 text-success">Balanced</span>,
+  red: <span className="badge bg-red-50 text-danger">Needs Order</span>,
+  unmatched: <span className="badge bg-amber-50 text-warning">Needs Review</span>,
+  skipped: <span className="badge bg-gray-100 text-gray-600">Skipped</span>,
+};
+
+const STATUS_ROW_CLASS = {
+  green: '',
+  red: 'bg-red-50/40',
+  unmatched: 'bg-amber-50/40',
+  skipped: 'bg-gray-50',
+};
+
+function OrderRow({ row, onOrderConfirmed, orderingId, setOrderingId, claim }) {
+  const toast = useToast();
+  const [qty, setQty] = useState('');
+  const [saving, setSaving] = useState(false);
+  const isOrdering = orderingId === row.ndc;
+
+  async function handleConfirm() {
+    const qtyNum = Number(qty);
+    if (!qtyNum || qtyNum <= 0) {
+      toast.error('Enter a positive qty ordered.');
+      return;
+    }
+    setSaving(true);
+    try {
+      const accRow = await findAccumulatorRow(
+        claim.facility_id,
+        claim.pharmacy_id,
+        new Date(claim.claim_date).getMonth() + 1,
+        new Date(claim.claim_date).getFullYear(),
+        row.ndc
+      );
+      if (!accRow) throw new Error('Accumulator row not found for this NDC/period.');
+      await confirmReplenishmentOrder({ accumulatorId: accRow.id, qtyOrdered: qtyNum });
+      toast.success(`Order logged for ${row.ndc} — running balance updated.`);
+      setOrderingId(null);
+      setQty('');
+      onOrderConfirmed();
+    } catch (err) {
+      toast.error(`Failed to confirm order: ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!isOrdering) {
+    return (
+      <button className="btn-secondary" onClick={() => setOrderingId(row.ndc)}>
+        Mark as Ordered
+      </button>
+    );
   }
   return (
-    <div className="space-y-4">
-      <div className="flex justify-end">
-        <button className="btn-secondary" onClick={onExport}>
-          <Download className="h-4 w-4" /> Download Standardized Replenishment Report
-        </button>
-      </div>
-      <div className="card overflow-hidden">
-        <div className="overflow-auto">
-          <table className="w-full min-w-max text-left text-sm">
-            <thead className="sticky top-0 bg-surface-alt">
-              <tr>
-                {['NDC', 'Drug Name', 'Lines', 'Distinct RX', 'Qty Dispensed', 'Pack Size', 'Qty Before', 'Qty After', 'Shortage', 'Exact Packs', 'Recommended Packs'].map(
-                  (h) => (
+    <div className="flex items-center gap-1.5">
+      <input
+        type="number"
+        min="0"
+        step="any"
+        className="input-field w-24 py-1"
+        placeholder="Qty"
+        value={qty}
+        onChange={(e) => setQty(e.target.value)}
+        autoFocus
+      />
+      <button className="btn-primary py-1" disabled={saving} onClick={handleConfirm}>
+        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Confirm'}
+      </button>
+      <button className="text-xs text-gray-400 hover:text-gray-600" onClick={() => setOrderingId(null)}>
+        Cancel
+      </button>
+    </div>
+  );
+}
+
+function ReplenishmentTab({ dailyResults, orderPanelRows, orderingId, setOrderingId, onResolveClick, onOrderConfirmed, claim, onExport }) {
+  if (dailyResults.length === 0) {
+    return <EmptyState icon={Package} title="No replenishment data is available for this claim batch" message="No NDCs were dispensed in this batch." />;
+  }
+  return (
+    <div className="space-y-8">
+      <div>
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-500">Daily Results — every NDC in this claim</h3>
+          <button className="btn-secondary" onClick={onExport}>
+            <Download className="h-4 w-4" /> Download Standardized Replenishment Report
+          </button>
+        </div>
+        <div className="card overflow-hidden">
+          <div className="overflow-auto">
+            <table className="w-full min-w-max text-left text-sm">
+              <thead className="sticky top-0 bg-surface-alt">
+                <tr>
+                  {[
+                    'NDC', 'Product Name', 'Pack Size', 'Starting Balance (Qty)', 'Qty Dispensed Today', 'New Balance (Qty)',
+                    'Packs to Order', '340B PPU', 'Reimbursement Owed', 'CIN', 'Manufacturer', 'Expiry Date', 'Status',
+                  ].map((h) => (
                     <th key={h} className="whitespace-nowrap px-4 py-3 font-semibold text-navy">
                       {h}
                     </th>
-                  )
-                )}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r, i) => (
-                <tr key={r.ndc} className={`${i % 2 ? 'bg-surface-alt' : 'bg-white'} ${r.recommendedPacks?.gt?.(0) ? 'bg-amber-50/40' : ''}`}>
-                  <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs">{r.ndc}</td>
-                  <td className="whitespace-nowrap px-4 py-2.5">{r.productName}</td>
-                  <td className="whitespace-nowrap px-4 py-2.5">{r.lineCount}</td>
-                  <td className="whitespace-nowrap px-4 py-2.5">{r.rxCount}</td>
-                  <td className="whitespace-nowrap px-4 py-2.5">{formatQty(r.qtyDispensed)}</td>
-                  <td className="whitespace-nowrap px-4 py-2.5">{r.packSize ?? '—'}</td>
-                  <td className="whitespace-nowrap px-4 py-2.5">{formatQty(r.qtyBefore)}</td>
-                  <td className="whitespace-nowrap px-4 py-2.5">
-                    <span className={Number(r.qtyAfter) < 0 ? 'font-semibold text-danger' : ''}>{formatQty(r.qtyAfter)}</span>
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-2.5">{r.flagged ? '—' : formatQty(r.shortage)}</td>
-                  <td className="whitespace-nowrap px-4 py-2.5">{r.flagged ? 'N/A (no pack size)' : formatQty(r.exactPacks, 4)}</td>
-                  <td className="whitespace-nowrap px-4 py-2.5 font-semibold">{r.flagged ? '—' : formatQty(r.recommendedPacks)}</td>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {dailyResults.map((r, i) => (
+                  <tr key={r.lineItemId} className={`${i % 2 ? 'bg-surface-alt' : 'bg-white'} ${STATUS_ROW_CLASS[r.status]}`}>
+                    <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs">{r.ndc}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5">{r.productName || '—'}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5">{r.packSize ?? '—'}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5">{r.startingBalance !== null ? formatQty(r.startingBalance) : '—'}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5">{formatQty(r.qtyDispensedToday)}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5">
+                      {r.newBalance !== null ? (
+                        <span className={Number(r.newBalance) < 0 ? 'font-semibold text-danger' : ''}>{formatQty(r.newBalance)}</span>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-2.5 font-semibold">{r.signed !== null ? formatQty(r.signed, 4) : '—'}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5">{r.ppu340b !== null && r.ppu340b !== undefined ? formatCurrency(r.ppu340b) : '—'}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5">{r.reimbursementOwed !== null && r.reimbursementOwed !== undefined ? formatCurrency(r.reimbursementOwed) : '—'}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5">{r.cin || '—'}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5">{r.manufacturer || '—'}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5">{r.expDay || '—'}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5">
+                      <div className="flex items-center gap-2">
+                        {STATUS_BADGE[r.status]}
+                        {(r.status === 'unmatched') && (
+                          <button className="text-xs font-medium text-teal-700 hover:underline" onClick={() => onResolveClick(r.lineItemId)}>
+                            Resolve
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
+      </div>
+
+      <div>
+        <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">Replenishment Order Panel — drugs needing an order today</h3>
+        {orderPanelRows.length === 0 ? (
+          <EmptyState icon={Package} title="Nothing to order" message="No NDCs in this batch need replenishment right now." />
+        ) : (
+          <div className="card overflow-hidden">
+            <div className="overflow-auto">
+              <table className="w-full min-w-max text-left text-sm">
+                <thead className="sticky top-0 bg-surface-alt">
+                  <tr>
+                    {['Product Name', 'NDC', 'Packs to Order', '340B Price', 'Total Order Cost', 'Action'].map((h) => (
+                      <th key={h} className="whitespace-nowrap px-4 py-3 font-semibold text-navy">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {orderPanelRows.map((r, i) => (
+                    <tr key={r.ndc} className={i % 2 ? 'bg-surface-alt' : 'bg-white'}>
+                      <td className="whitespace-nowrap px-4 py-2.5">{r.productName}</td>
+                      <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs">{r.ndc}</td>
+                      <td className="whitespace-nowrap px-4 py-2.5 font-semibold text-danger">{formatQty(r.recommendedPacks)}</td>
+                      <td className="whitespace-nowrap px-4 py-2.5">{r.price340b !== null && r.price340b !== undefined ? formatCurrency(r.price340b) : '—'}</td>
+                      <td className="whitespace-nowrap px-4 py-2.5 font-semibold">{r.totalOrderCost !== null ? formatCurrency(r.totalOrderCost) : '—'}</td>
+                      <td className="whitespace-nowrap px-4 py-2.5">
+                        <OrderRow row={r} onOrderConfirmed={onOrderConfirmed} orderingId={orderingId} setOrderingId={setOrderingId} claim={claim} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

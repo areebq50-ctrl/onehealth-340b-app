@@ -26,6 +26,19 @@ import ScopeLabel from '../components/common/ScopeLabel.jsx';
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
+const ACCUMULATOR_FILTERS_KEY = 'onehealth340b.accumulatorFilters';
+
+function loadStoredFilters() {
+  try {
+    const raw = localStorage.getItem(ACCUMULATOR_FILTERS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+const DEFAULT_FILTERS = { expiry: 'all', manufacturer: 'all', negativeOnly: false };
+
 function EditRowForm({ row, onSave, onDelete, onCancel, saving }) {
   const [form, setForm] = useState({
     product_name: row.product_name ?? '',
@@ -108,6 +121,12 @@ export default function Accumulator() {
   const [importOpen, setImportOpen] = useState(false);
   const [rolloverOpen, setRolloverOpen] = useState(false);
 
+  const [filters, setFilters] = useState(() => ({ ...DEFAULT_FILTERS, ...loadStoredFilters() }));
+
+  useEffect(() => {
+    localStorage.setItem(ACCUMULATOR_FILTERS_KEY, JSON.stringify(filters));
+  }, [filters]);
+
   const facilitySelected = selectedFacilityId !== 'all';
   const canWrite = isAdmin && facilitySelected && !isAllPharmacies;
 
@@ -166,6 +185,7 @@ export default function Accumulator() {
       { key: 'price_340b', label: '340B Price', sortable: true, accessor: (r) => Number(r.price_340b ?? 0), render: (r) => formatCurrency(r.price_340b) },
       { key: 'ppu_340b', label: '340B PPU', sortable: true, accessor: (r) => Number(r.ppu_340b ?? 0), render: (r) => formatCurrency(r.ppu_340b) },
       { key: 'cost_on_hand_340b', label: 'Cost on Hand', sortable: true, accessor: (r) => Number(r.cost_on_hand_340b ?? 0), render: (r) => formatCurrency(r.cost_on_hand_340b) },
+      { key: 'cin', label: 'CIN', sortable: true },
       { key: 'manufacturer', label: 'Manufacturer', sortable: true },
       ...(canWrite && isLatestPeriod
         ? [
@@ -183,6 +203,23 @@ export default function Accumulator() {
     ],
     [canWrite, isLatestPeriod, isAllPharmacies]
   );
+
+  const manufacturers = useMemo(
+    () => Array.from(new Set(rows.map((r) => r.manufacturer).filter(Boolean))).sort(),
+    [rows]
+  );
+
+  const filteredRows = useMemo(() => {
+    return rows.filter((r) => {
+      if (filters.negativeOnly && !(Number(r.qty_on_hand) < 0)) return false;
+      if (filters.manufacturer !== 'all' && r.manufacturer !== filters.manufacturer) return false;
+      if (filters.expiry !== 'all') {
+        const { daysUntil } = getExpiryTone(r.exp_day);
+        if (daysUntil === undefined || daysUntil > Number(filters.expiry)) return false;
+      }
+      return true;
+    });
+  }, [rows, filters]);
 
   async function refreshRows() {
     const data = await fetchAccumulatorRows(selectedFacilityId, selectedPharmacyId, period.month, period.year);
@@ -304,6 +341,55 @@ export default function Accumulator() {
 
       <ScopeLabel period={period ? `${MONTH_NAMES[period.month - 1]} ${period.year}` : undefined} />
 
+      {period && (
+        <div className="card flex flex-wrap items-end gap-4 p-4">
+          <div>
+            <label className="label-text">Expiring within</label>
+            <select
+              className="input-field"
+              value={filters.expiry}
+              onChange={(e) => setFilters((f) => ({ ...f, expiry: e.target.value }))}
+            >
+              <option value="all">Any time</option>
+              <option value="30">30 days</option>
+              <option value="60">60 days</option>
+              <option value="90">90 days</option>
+            </select>
+          </div>
+          <div>
+            <label className="label-text">Manufacturer</label>
+            <select
+              className="input-field"
+              value={filters.manufacturer}
+              onChange={(e) => setFilters((f) => ({ ...f, manufacturer: e.target.value }))}
+            >
+              <option value="all">All manufacturers</option>
+              {manufacturers.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </div>
+          <label className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-600">
+            <input
+              type="checkbox"
+              checked={filters.negativeOnly}
+              onChange={(e) => setFilters((f) => ({ ...f, negativeOnly: e.target.checked }))}
+            />
+            Negative balance / needs replenishment only
+          </label>
+          {(filters.expiry !== 'all' || filters.manufacturer !== 'all' || filters.negativeOnly) && (
+            <button className="text-sm text-gray-400 hover:text-gray-600" onClick={() => setFilters(DEFAULT_FILTERS)}>
+              Clear filters
+            </button>
+          )}
+          <span className="ml-auto text-xs text-gray-400">
+            {filteredRows.length} of {rows.length} rows
+          </span>
+        </div>
+      )}
+
       {loading ? (
         <SkeletonTable rows={8} cols={10} />
       ) : !period ? (
@@ -324,8 +410,10 @@ export default function Accumulator() {
             )
           }
         />
+      ) : filteredRows.length === 0 ? (
+        <EmptyState title="No rows match these filters" message="Try clearing a filter above." />
       ) : (
-        <DataTable columns={columns} rows={rows} rowKey={(r) => r.id} searchPlaceholder="Search NDC or product name..." />
+        <DataTable columns={columns} rows={filteredRows} rowKey={(r) => r.id} searchPlaceholder="Search NDC, product name, manufacturer, or CIN..." />
       )}
 
       <Modal open={Boolean(editingRow)} onClose={() => setEditingRow(null)} title={`Edit ${editingRow?.ndc ?? ''}`}>

@@ -87,6 +87,57 @@ export async function rolloverMonth({ facilityId, pharmacyId, fromMonth, fromYea
   return data;
 }
 
+/**
+ * Resolves an unmatched claim line item — never a silent drop. Two actions:
+ *  - 'add_and_match': creates a new accumulator row (or reuses one already
+ *    added by this same call for another line, e.g. re-processed batch) from
+ *    the reviewed/confirmed NDC details, then retroactively matches and
+ *    deducts this specific claim line against it.
+ *  - 'skip': records a mandatory reason; the line stays unmatched but is now
+ *    visibly "reviewed and skipped" instead of just "unmatched".
+ */
+export async function resolveUnmatchedLine({
+  lineItemId,
+  action,
+  ndc,
+  productName,
+  packSize,
+  qtyOnHand,
+  expDay,
+  price340b,
+  ppu340b,
+  cin,
+  manufacturer,
+  skipReason,
+}) {
+  const { error } = await supabase.rpc('resolve_unmatched_line', {
+    p_line_item_id: lineItemId,
+    p_action: action,
+    p_ndc: ndc ?? null,
+    p_product_name: productName ?? null,
+    p_pack_size: packSize ?? null,
+    p_qty_on_hand: qtyOnHand ?? null,
+    p_exp_day: expDay || null,
+    p_price_340b: price340b ?? null,
+    p_ppu_340b: ppu340b ?? null,
+    p_cin: cin ?? null,
+    p_manufacturer: manufacturer ?? null,
+    p_skip_reason: skipReason ?? null,
+  });
+  if (error) throw error;
+}
+
+/** Marks a replenishment order as placed/received: adds qtyOrdered back into the running balance and logs it. */
+export async function confirmReplenishmentOrder({ accumulatorId, qtyOrdered, notes }) {
+  const { data, error } = await supabase.rpc('confirm_replenishment_order', {
+    p_accumulator_id: accumulatorId,
+    p_qty_ordered: qtyOrdered,
+    p_notes: notes ?? null,
+  });
+  if (error) throw error;
+  return data;
+}
+
 export async function importAccumulatorRows({ facilityId, pharmacyId, month, year, rows }) {
   const { data, error } = await supabase.rpc('import_accumulator_rows', {
     p_facility_id: facilityId,

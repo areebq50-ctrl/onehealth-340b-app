@@ -1090,3 +1090,520 @@ $$;
 
 revoke all on function public.import_accumulator_rows from public;
 grant execute on function public.import_accumulator_rows to authenticated;
+
+-- ============================================================================
+-- PATCH: per-line accumulator snapshot fields, unmatched-NDC resolution
+-- (openFDA-assisted add-and-match or explicit skip-with-reason), and
+-- replenishment order confirmation. Appended rather than woven into the
+-- sections above so the diff against the prior consolidated file stays
+-- reviewable; still idempotent and safe to re-run like everything above.
+-- ============================================================================
+
+-- claim_line_items gains a snapshot of the accumulator fields that don't
+-- already have a column (cin/manufacturer/exp_day/price_340b), captured at
+-- the moment the claim was processed — consistent with pack_size/ppu_340b,
+-- which were already snapshotted this way. This lets the daily results
+-- table render CIN/Manufacturer/Expiry/340B Price without a live join back
+-- to the (possibly since-edited) current accumulator row. It also gains
+-- skip_reason/resolved_by/resolved_at for the unmatched-NDC workflow below.
+alter table public.claim_line_items add column if not exists cin text;
+alter table public.claim_line_items add column if not exists manufacturer text;
+alter table public.claim_line_items add column if not exists exp_day date;
+alter table public.claim_line_items add column if not exists price_340b numeric;
+alter table public.claim_line_items add column if not exists skip_reason text;
+alter table public.claim_line_items add column if not exists resolved_by uuid references public.users(id);
+alter table public.claim_line_items add column if not exists resolved_at timestamptz;
+
+comment on column public.claim_line_items.skip_reason is 'Set when a user explicitly skips an unmatched NDC with a reason instead of adding it to the accumulator. NULL with matched=false means still pending review — every claim line must end up matched, skipped-with-reason, or manually added, never silently dropped.';
+
+-- Re-declare process_claim with the SAME signature (no new DROP FUNCTION
+-- guard needed — CREATE OR REPLACE on an unchanged argument list just swaps
+-- the body) to also snapshot cin/manufacturer/exp_day/price_340b onto each
+-- matched line item from the live accumulator row at processing time.
+create or replace function public.process_claim(
+  p_pharmacy_id uuid,
+  p_facility_id uuid,
+  p_claim_date date,
+  p_file_path text,
+  p_line_items jsonb,
+  p_raw_lines jsonb default null,
+  p_overwrite boolean default false,
+  p_original_filename text default null,
+  p_file_hash text default null,
+  p_total_rows integer default null,
+  p_valid_rows integer default null,
+  p_invalid_rows integer default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_month integer := extract(month from p_claim_date);
+  v_year integer := extract(year from p_claim_date);
+  v_claim_id uuid;
+  v_existing_claim_id uuid;
+  v_item jsonb;
+  v_ndc varchar(11);
+  v_qty numeric;
+  v_matched boolean;
+  v_acc record;
+  v_prior_qty numeric;
+  v_new_qty numeric;
+  v_reimb numeric;
+  v_packs numeric;
+  v_total_reimb numeric := 0;
+  v_matched_count integer := 0;
+  v_unmatched_count integer := 0;
+  v_line_count integer := 0;
+  v_total_qty numeric := 0;
+  v_old_item record;
+  v_ndc_matched jsonb := '{}'::jsonb;
+  v_raw_line jsonb;
+  v_line_number integer := 0;
+begin
+  if not public.is_active_user() then
+    raise exception 'User is not an active platform user';
+  end if;
+
+  if p_pharmacy_id is null then
+    raise exception 'A specific pharmacy must be selected to process a claim';
+  end if;
+
+  if not exists (
+    select 1 from public.pharmacy_facilities
+    where pharmacy_id = p_pharmacy_id and facility_id = p_facility_id
+  ) then
+    raise exception 'Pharmacy % does not belong to facility %', p_pharmacy_id, p_facility_id;
+  end if;
+
+  if p_line_items is null or jsonb_array_length(p_line_items) = 0 then
+    raise exception 'No line items supplied';
+  end if;
+
+  select id into v_existing_claim_id
+  from public.claims
+  where pharmacy_id = p_pharmacy_id and facility_id = p_facility_id and claim_date = p_claim_date;
+
+  if v_existing_claim_id is not null and not p_overwrite then
+    raise exception 'A claim already exists for this pharmacy/facility/date. Set p_overwrite=true to confirm replacement.';
+  end if;
+
+  if v_existing_claim_id is not null and p_overwrite then
+    for v_old_item in
+      select * from public.claim_line_items where claim_id = v_existing_claim_id and matched = true
+    loop
+      select * into v_acc
+      from public.accumulator
+      where ndc = v_old_item.ndc and facility_id = p_facility_id and pharmacy_id = p_pharmacy_id
+        and month = v_month and year = v_year
+      for update;
+
+      if found then
+        v_prior_qty := v_acc.qty_on_hand;
+        v_new_qty := v_prior_qty + v_old_item.qty_dispensed;
+
+        update public.accumulator
+        set qty_on_hand = v_new_qty,
+            packs_on_hand = case when pack_size is not null and pack_size <> 0 then v_new_qty / pack_size else null end,
+            cost_on_hand_340b = case when ppu_340b is not null then v_new_qty * ppu_340b else null end,
+            updated_at = now()
+        where id = v_acc.id;
+
+        insert into public.accumulator_audit_log
+          (user_id, claim_id, ndc, product_name, prior_qty, qty_dispensed, new_qty, reimbursement_amount, action_type, facility_id, pharmacy_id)
+        values
+          (v_user_id, v_existing_claim_id, v_old_item.ndc, v_old_item.product_name, v_prior_qty,
+           -v_old_item.qty_dispensed, v_new_qty, -coalesce(v_old_item.reimbursement_owed, 0), 'claim_reversal',
+           p_facility_id, p_pharmacy_id);
+      end if;
+    end loop;
+
+    delete from public.claim_line_items where claim_id = v_existing_claim_id;
+    delete from public.claim_raw_lines where claim_id = v_existing_claim_id;
+    v_claim_id := v_existing_claim_id;
+  else
+    insert into public.claims (pharmacy_id, facility_id, claim_date, uploaded_by, file_path, total_reimbursement)
+    values (p_pharmacy_id, p_facility_id, p_claim_date, v_user_id, p_file_path, 0)
+    returning id into v_claim_id;
+  end if;
+
+  for v_item in select * from jsonb_array_elements(p_line_items)
+  loop
+    v_ndc := v_item->>'ndc';
+    v_qty := (v_item->>'qty_dispensed')::numeric;
+    v_matched := coalesce((v_item->>'matched')::boolean, false);
+
+    if v_ndc is null or v_qty is null then
+      raise exception 'Line item missing ndc or qty_dispensed: %', v_item;
+    end if;
+
+    v_line_count := v_line_count + 1;
+    v_total_qty := v_total_qty + v_qty;
+    v_ndc_matched := v_ndc_matched || jsonb_build_object(v_ndc, v_matched);
+
+    if not v_matched then
+      v_unmatched_count := v_unmatched_count + 1;
+      insert into public.claim_line_items
+        (claim_id, ndc, product_name, qty_dispensed, matched, flag_reason)
+      values
+        (v_claim_id, v_ndc, v_item->>'product_name_raw', v_qty, false,
+         'Unmatched: NDC not found in this pharmacy''s accumulator for this period');
+      continue;
+    end if;
+
+    select * into v_acc
+    from public.accumulator
+    where ndc = v_ndc and facility_id = p_facility_id and pharmacy_id = p_pharmacy_id
+      and month = v_month and year = v_year
+    for update;
+
+    if not found then
+      raise exception 'No accumulator found for this pharmacy (%) at facility % for period %/%. NDC % cannot be matched — start this pharmacy''s accumulator for this month first.',
+        p_pharmacy_id, p_facility_id, v_month, v_year, v_ndc;
+    end if;
+
+    v_matched_count := v_matched_count + 1;
+    v_prior_qty := v_acc.qty_on_hand;
+    v_new_qty := v_prior_qty - v_qty;
+    v_reimb := case when v_acc.ppu_340b is not null then round(v_qty * v_acc.ppu_340b, 4) else null end;
+    v_packs := case when v_acc.pack_size is not null and v_acc.pack_size <> 0 then v_qty / v_acc.pack_size else null end;
+
+    update public.accumulator
+    set qty_on_hand = v_new_qty,
+        packs_on_hand = case when v_acc.pack_size is not null and v_acc.pack_size <> 0 then v_new_qty / v_acc.pack_size else null end,
+        cost_on_hand_340b = case when v_acc.ppu_340b is not null then v_new_qty * v_acc.ppu_340b else null end,
+        updated_at = now()
+    where id = v_acc.id;
+
+    insert into public.claim_line_items
+      (claim_id, ndc, product_name, qty_dispensed, pack_size, packs_dispensed, ppu_340b,
+       reimbursement_owed, qty_before, qty_after, matched, flag_reason,
+       cin, manufacturer, exp_day, price_340b)
+    values
+      (v_claim_id, v_ndc, v_acc.product_name, v_qty, v_acc.pack_size, v_packs, v_acc.ppu_340b,
+       v_reimb, v_prior_qty, v_new_qty, true,
+       case when v_new_qty < 0 then 'Negative on-hand after this claim' else null end,
+       v_acc.cin, v_acc.manufacturer, v_acc.exp_day, v_acc.price_340b);
+
+    insert into public.accumulator_audit_log
+      (user_id, claim_id, ndc, product_name, prior_qty, qty_dispensed, new_qty, reimbursement_amount, action_type, facility_id, pharmacy_id)
+    values
+      (v_user_id, v_claim_id, v_ndc, v_acc.product_name, v_prior_qty, v_qty, v_new_qty, v_reimb, 'claim_dispense',
+       p_facility_id, p_pharmacy_id);
+
+    v_total_reimb := v_total_reimb + coalesce(v_reimb, 0);
+  end loop;
+
+  if p_raw_lines is not null then
+    for v_raw_line in select * from jsonb_array_elements(p_raw_lines)
+    loop
+      v_line_number := v_line_number + 1;
+      v_ndc := v_raw_line->>'ndc';
+      insert into public.claim_raw_lines
+        (claim_id, line_number, ndc, product_name, qty_dispensed, matched,
+         refill_no, refills_auth, refills_remain, date_filled, date_written, rx_number, days_supply,
+         primary_paid, patient_paid, tax, fee, total_paid, primary_payer, bin, pcn, group_code, member_id,
+         scc, prescriber, prescriber_npi)
+      values
+        (v_claim_id, v_line_number, v_ndc, v_raw_line->>'product_name',
+         coalesce((v_raw_line->>'qty_dispensed')::numeric, 0),
+         coalesce((v_ndc_matched->v_ndc)::boolean, false),
+         nullif(v_raw_line->>'refill_no','')::integer, nullif(v_raw_line->>'refills_auth','')::integer, nullif(v_raw_line->>'refills_remain','')::integer,
+         nullif(v_raw_line->>'date_filled','')::date, nullif(v_raw_line->>'date_written','')::date, v_raw_line->>'rx_number',
+         nullif(v_raw_line->>'days_supply','')::numeric,
+         nullif(v_raw_line->>'primary_paid','')::numeric, nullif(v_raw_line->>'patient_paid','')::numeric,
+         nullif(v_raw_line->>'tax','')::numeric, nullif(v_raw_line->>'fee','')::numeric, nullif(v_raw_line->>'total_paid','')::numeric,
+         v_raw_line->>'primary_payer', v_raw_line->>'bin', v_raw_line->>'pcn', v_raw_line->>'group_code', v_raw_line->>'member_id',
+         v_raw_line->>'scc', v_raw_line->>'prescriber', v_raw_line->>'prescriber_npi');
+    end loop;
+  end if;
+
+  update public.claims
+  set total_reimbursement = v_total_reimb,
+      file_path = coalesce(p_file_path, file_path),
+      original_filename = coalesce(p_original_filename, original_filename),
+      file_hash = coalesce(p_file_hash, file_hash),
+      total_rows = coalesce(p_total_rows, total_rows),
+      valid_rows = coalesce(p_valid_rows, valid_rows),
+      invalid_rows = coalesce(p_invalid_rows, invalid_rows),
+      matched_count = v_matched_count,
+      unmatched_count = v_unmatched_count,
+      claim_line_count = v_line_count,
+      distinct_rx_count = (select count(distinct rx_number) from public.claim_raw_lines where claim_id = v_claim_id and rx_number is not null),
+      distinct_ndc_count = (select count(distinct ndc) from public.claim_line_items where claim_id = v_claim_id),
+      total_qty_dispensed = v_total_qty,
+      uploaded_by = v_user_id,
+      uploaded_at = now(),
+      status = 'completed'
+  where id = v_claim_id;
+
+  return v_claim_id;
+end;
+$$;
+
+revoke all on function public.process_claim(uuid, uuid, date, text, jsonb, jsonb, boolean, text, text, integer, integer, integer) from public;
+grant execute on function public.process_claim(uuid, uuid, date, text, jsonb, jsonb, boolean, text, text, integer, integer, integer) to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- Unmatched-NDC resolution: an NDC in the daily claims that isn't in the
+-- accumulator must never be silently dropped. resolve_unmatched_line either
+-- (a) adds a brand-new accumulator row (seeded from an openFDA lookup the
+-- frontend performs and lets the user review/correct) and retroactively
+-- matches the claim line against it, deducting qty and logging exactly like
+-- a normal claim_dispense — or (b) records an explicit skip reason, leaving
+-- the line visibly "reviewed and skipped" rather than just "unmatched".
+-- Callable by any active user (not admin-only) since it's a normal part of
+-- daily claims processing, not an administrative accumulator edit.
+-- ----------------------------------------------------------------------------
+drop function if exists public.resolve_unmatched_line(uuid, text, varchar, text, numeric, numeric, date, numeric, numeric, text, text, text) cascade;
+create or replace function public.resolve_unmatched_line(
+  p_line_item_id uuid,
+  p_action text,
+  p_ndc varchar(11) default null,
+  p_product_name text default null,
+  p_pack_size numeric default null,
+  p_qty_on_hand numeric default null,
+  p_exp_day date default null,
+  p_price_340b numeric default null,
+  p_ppu_340b numeric default null,
+  p_cin text default null,
+  p_manufacturer text default null,
+  p_skip_reason text default null
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_line record;
+  v_claim record;
+  v_acc record;
+  v_new_qty numeric;
+  v_packs numeric;
+  v_reimb numeric;
+  v_month integer;
+  v_year integer;
+begin
+  if not public.is_active_user() then
+    raise exception 'User is not an active platform user';
+  end if;
+
+  if p_action not in ('add_and_match', 'skip') then
+    raise exception 'Invalid action % — expected add_and_match or skip', p_action;
+  end if;
+
+  select * into v_line from public.claim_line_items where id = p_line_item_id for update;
+  if not found then
+    raise exception 'Claim line item % not found', p_line_item_id;
+  end if;
+  if v_line.matched then
+    raise exception 'This line item is already matched';
+  end if;
+
+  select * into v_claim from public.claims where id = v_line.claim_id;
+  if not found then
+    raise exception 'Parent claim for line item % not found', p_line_item_id;
+  end if;
+
+  if p_action = 'skip' then
+    if p_skip_reason is null or trim(p_skip_reason) = '' then
+      raise exception 'A reason is required to skip an unmatched NDC';
+    end if;
+    update public.claim_line_items
+    set skip_reason = p_skip_reason,
+        resolved_by = v_user_id,
+        resolved_at = now(),
+        flag_reason = 'Skipped: ' || p_skip_reason
+    where id = p_line_item_id;
+    return;
+  end if;
+
+  -- add_and_match
+  if p_ndc is null or p_product_name is null or p_pack_size is null or p_pack_size = 0 then
+    raise exception 'NDC, product name, and a non-zero pack size are required to add a new accumulator row';
+  end if;
+
+  v_month := extract(month from v_claim.claim_date)::integer;
+  v_year := extract(year from v_claim.claim_date)::integer;
+
+  select * into v_acc
+  from public.accumulator
+  where ndc = p_ndc and facility_id = v_claim.facility_id and pharmacy_id = v_claim.pharmacy_id
+    and month = v_month and year = v_year
+  for update;
+
+  if not found then
+    insert into public.accumulator
+      (ndc, product_name, pack_size, qty_on_hand, packs_on_hand, exp_day, price_340b, ppu_340b,
+       cost_on_hand_340b, cin, manufacturer, facility_id, pharmacy_id, month, year)
+    values
+      (p_ndc, p_product_name, p_pack_size, coalesce(p_qty_on_hand, 0),
+       coalesce(p_qty_on_hand, 0) / p_pack_size,
+       p_exp_day, p_price_340b, p_ppu_340b,
+       case when p_ppu_340b is not null then coalesce(p_qty_on_hand, 0) * p_ppu_340b else null end,
+       p_cin, p_manufacturer, v_claim.facility_id, v_claim.pharmacy_id, v_month, v_year)
+    returning * into v_acc;
+
+    insert into public.accumulator_audit_log
+      (user_id, claim_id, ndc, product_name, prior_qty, qty_dispensed, new_qty, reimbursement_amount, action_type, facility_id, pharmacy_id)
+    values
+      (v_user_id, v_claim.id, p_ndc, p_product_name, 0, -coalesce(p_qty_on_hand, 0), coalesce(p_qty_on_hand, 0), null,
+       'manual_add', v_claim.facility_id, v_claim.pharmacy_id);
+  end if;
+
+  v_new_qty := v_acc.qty_on_hand - v_line.qty_dispensed;
+  v_reimb := case when v_acc.ppu_340b is not null then round(v_line.qty_dispensed * v_acc.ppu_340b, 4) else null end;
+  v_packs := case when v_acc.pack_size is not null and v_acc.pack_size <> 0 then v_line.qty_dispensed / v_acc.pack_size else null end;
+
+  update public.accumulator
+  set qty_on_hand = v_new_qty,
+      packs_on_hand = case when v_acc.pack_size is not null and v_acc.pack_size <> 0 then v_new_qty / v_acc.pack_size else null end,
+      cost_on_hand_340b = case when v_acc.ppu_340b is not null then v_new_qty * v_acc.ppu_340b else null end,
+      updated_at = now()
+  where id = v_acc.id;
+
+  update public.claim_line_items
+  set matched = true,
+      product_name = v_acc.product_name,
+      pack_size = v_acc.pack_size,
+      packs_dispensed = v_packs,
+      ppu_340b = v_acc.ppu_340b,
+      price_340b = v_acc.price_340b,
+      cin = v_acc.cin,
+      manufacturer = v_acc.manufacturer,
+      exp_day = v_acc.exp_day,
+      reimbursement_owed = v_reimb,
+      qty_before = v_acc.qty_on_hand,
+      qty_after = v_new_qty,
+      flag_reason = case when v_new_qty < 0 then 'Negative on-hand after this claim' else null end,
+      skip_reason = null,
+      resolved_by = v_user_id,
+      resolved_at = now()
+  where id = p_line_item_id;
+
+  insert into public.accumulator_audit_log
+    (user_id, claim_id, ndc, product_name, prior_qty, qty_dispensed, new_qty, reimbursement_amount, action_type, facility_id, pharmacy_id)
+  values
+    (v_user_id, v_claim.id, p_ndc, v_acc.product_name, v_acc.qty_on_hand, v_line.qty_dispensed, v_new_qty, v_reimb, 'claim_dispense',
+     v_claim.facility_id, v_claim.pharmacy_id);
+
+  update public.claims
+  set matched_count = coalesce(matched_count, 0) + 1,
+      unmatched_count = greatest(coalesce(unmatched_count, 0) - 1, 0),
+      total_reimbursement = coalesce(total_reimbursement, 0) + coalesce(v_reimb, 0)
+  where id = v_claim.id;
+end;
+$$;
+
+revoke all on function public.resolve_unmatched_line from public;
+grant execute on function public.resolve_unmatched_line to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- Replenishment order confirmation: logs the order and adds the received
+-- qty back into the running balance. accumulator_orders is an insert-only
+-- ledger (no update/delete policy for any role), same pattern as the audit
+-- log tables.
+-- ----------------------------------------------------------------------------
+create table if not exists public.accumulator_orders (
+  id uuid primary key default gen_random_uuid(),
+  accumulator_id uuid not null references public.accumulator(id) on delete cascade,
+  ndc varchar(11) not null,
+  product_name text,
+  facility_id uuid not null references public.facilities(id),
+  pharmacy_id uuid not null references public.pharmacies(id),
+  month integer not null,
+  year integer not null,
+  qty_ordered numeric not null,
+  packs_ordered numeric,
+  unit_cost_340b numeric,
+  total_cost numeric,
+  ordered_by uuid references public.users(id),
+  ordered_at timestamptz not null default now(),
+  notes text
+);
+
+create index if not exists idx_accumulator_orders_accumulator on public.accumulator_orders (accumulator_id);
+create index if not exists idx_accumulator_orders_pharmacy on public.accumulator_orders (pharmacy_id);
+
+alter table public.accumulator_orders enable row level security;
+drop policy if exists accumulator_orders_select on public.accumulator_orders;
+create policy accumulator_orders_select on public.accumulator_orders for select using (public.is_active_user());
+-- Deliberately no insert/update/delete policy — written only via confirm_replenishment_order() below.
+
+-- 'order_received' is a new action_type — drop and re-add the check
+-- constraint to allow it (adding a bare CHECK value isn't ALTERable in
+-- place in Postgres; this is the standard idempotent pattern for it).
+alter table public.accumulator_audit_log drop constraint if exists accumulator_audit_log_action_type_check;
+alter table public.accumulator_audit_log add constraint accumulator_audit_log_action_type_check check (action_type in
+  ('claim_dispense', 'claim_reversal', 'manual_qty_edit', 'rollover', 'manual_add', 'import_override', 'manual_delete', 'order_received'));
+
+create or replace function public.confirm_replenishment_order(
+  p_accumulator_id uuid,
+  p_qty_ordered numeric,
+  p_notes text default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_row record;
+  v_new_qty numeric;
+  v_packs numeric;
+  v_cost numeric;
+  v_order_id uuid;
+begin
+  if not public.is_active_user() then
+    raise exception 'User is not an active platform user';
+  end if;
+
+  if p_qty_ordered is null or p_qty_ordered <= 0 then
+    raise exception 'Qty ordered must be a positive number';
+  end if;
+
+  select * into v_row from public.accumulator where id = p_accumulator_id for update;
+  if not found then
+    raise exception 'Accumulator row % not found', p_accumulator_id;
+  end if;
+
+  if not public.is_latest_period(v_row.facility_id, v_row.pharmacy_id, v_row.month, v_row.year) then
+    raise exception 'This accumulator period is closed (historical) and cannot receive an order';
+  end if;
+
+  v_new_qty := v_row.qty_on_hand + p_qty_ordered;
+  v_packs := case when v_row.pack_size is not null and v_row.pack_size <> 0 then p_qty_ordered / v_row.pack_size else null end;
+  v_cost := case when v_packs is not null and v_row.price_340b is not null then v_packs * v_row.price_340b else null end;
+
+  update public.accumulator
+  set qty_on_hand = v_new_qty,
+      packs_on_hand = case when v_row.pack_size is not null and v_row.pack_size <> 0 then v_new_qty / v_row.pack_size else null end,
+      cost_on_hand_340b = case when v_row.ppu_340b is not null then v_new_qty * v_row.ppu_340b else null end,
+      updated_at = now()
+  where id = p_accumulator_id;
+
+  insert into public.accumulator_orders
+    (accumulator_id, ndc, product_name, facility_id, pharmacy_id, month, year, qty_ordered, packs_ordered, unit_cost_340b, total_cost, ordered_by, notes)
+  values
+    (p_accumulator_id, v_row.ndc, v_row.product_name, v_row.facility_id, v_row.pharmacy_id, v_row.month, v_row.year,
+     p_qty_ordered, v_packs, v_row.price_340b, v_cost, v_user_id, p_notes)
+  returning id into v_order_id;
+
+  insert into public.accumulator_audit_log
+    (user_id, claim_id, ndc, product_name, prior_qty, qty_dispensed, new_qty, reimbursement_amount, action_type, facility_id, pharmacy_id)
+  values
+    (v_user_id, null, v_row.ndc, v_row.product_name, v_row.qty_on_hand, -p_qty_ordered, v_new_qty, null, 'order_received',
+     v_row.facility_id, v_row.pharmacy_id);
+
+  return v_order_id;
+end;
+$$;
+
+revoke all on function public.confirm_replenishment_order from public;
+grant execute on function public.confirm_replenishment_order to authenticated;

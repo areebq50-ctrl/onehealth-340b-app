@@ -144,6 +144,36 @@ export function packsToOrder(qtyAfter, packSize) {
   return { shortage, exactPacks, recommendedPacks, flagged: false, reason: null };
 }
 
+/**
+ * Signed Packs to Order = -(New Balance ÷ Pack Size), i.e. -(qtyAfter / packSize).
+ *
+ * Sign convention (confirmed): POSITIVE = needs a replenishment order placed
+ * today (this many packs short). NEGATIVE = over-replenished (this many
+ * packs of surplus, no order needed). Zero = exactly balanced.
+ *
+ * Unlike packsToOrder() above (which clamps at zero and ceils to a whole
+ * number — "how many packs to actually place on an order"), this returns
+ * the raw, unclamped, un-rounded signed value for display in the daily
+ * results table and the running accumulator view, where a surplus is just
+ * as meaningful to show as a shortage.
+ *
+ * Example: qtyAfter=-51, packSize=8.5  -> signed = 6.0   (needs 6 packs ordered)
+ * Example: qtyAfter=51,  packSize=8.5  -> signed = -6.0  (6 packs of surplus)
+ * Example: qtyAfter=0,   packSize=8.5  -> signed = 0     (exactly balanced)
+ */
+export function signedPacksToOrder(qtyAfter, packSize) {
+  const qtyD = toDecimal(qtyAfter);
+  const packSizeD = toDecimal(packSize);
+
+  if (qtyD === null) return { value: null, flagged: true, reason: 'Qty is missing or non-numeric' };
+  if (packSizeD === null || packSizeD.isZero()) {
+    return { value: null, flagged: true, reason: 'Pack Size is missing or zero — cannot compute packs to order' };
+  }
+
+  const value = qtyD.dividedBy(packSizeD).negated();
+  return { value, flagged: false, reason: null };
+}
+
 /** Round a Decimal to storage precision (4dp). Only call at the point of writing to the DB. */
 export function toStorage(decimalValue) {
   if (decimalValue === null || decimalValue === undefined) return null;
