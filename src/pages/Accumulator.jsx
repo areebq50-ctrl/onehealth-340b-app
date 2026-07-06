@@ -11,6 +11,8 @@ import {
   rolloverMonth,
   importAccumulatorRows,
   deleteAccumulatorRow,
+  deleteAccumulatorPeriod,
+  countClaimsForPeriod,
 } from '../lib/accumulatorApi.js';
 import { parseAccumulatorXlsx } from '../parsers/accumulatorXlsxParser.js';
 import { exportAccumulator } from '../lib/excelExport.js';
@@ -120,6 +122,7 @@ export default function Accumulator() {
   const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [rolloverOpen, setRolloverOpen] = useState(false);
+  const [deletingPeriod, setDeletingPeriod] = useState(false);
 
   const [filters, setFilters] = useState(() => ({ ...DEFAULT_FILTERS, ...loadStoredFilters() }));
 
@@ -255,6 +258,37 @@ export default function Accumulator() {
     }
   }
 
+  async function handleDeletePeriod() {
+    const claimCount = await countClaimsForPeriod(selectedFacilityId, selectedPharmacyId, period.month, period.year);
+    const claimWarning =
+      claimCount > 0
+        ? ` ${claimCount} claim batch${claimCount > 1 ? 'es have' : ' has'} already been processed against this period — deleting the ` +
+          `accumulator will NOT reverse those claims or their reimbursement, it only removes the current on-hand rows.`
+        : '';
+    if (
+      !window.confirm(
+        `Delete ALL ${rows.length} accumulator rows for ${selectedPharmacy?.name} — ${MONTH_NAMES[period.month - 1]} ${period.year}? ` +
+          `This cannot be undone.${claimWarning}`
+      )
+    )
+      return;
+    setDeletingPeriod(true);
+    try {
+      const count = await deleteAccumulatorPeriod({
+        facilityId: selectedFacilityId,
+        pharmacyId: selectedPharmacyId,
+        month: period.month,
+        year: period.year,
+      });
+      toast.success(`Deleted ${count} accumulator rows for this period.`);
+      await loadPeriods();
+    } catch (err) {
+      toast.error(`Delete failed: ${err.message}`);
+    } finally {
+      setDeletingPeriod(false);
+    }
+  }
+
   if (!facilitySelected) {
     return (
       <div className="space-y-6">
@@ -300,6 +334,15 @@ export default function Accumulator() {
               </button>
               <button className="btn-primary" onClick={() => setAddOpen(true)} disabled={!canWrite || (!isLatestPeriod && periods.length > 0)}>
                 <Plus className="h-4 w-4" /> Add NDC
+              </button>
+              <button
+                className="btn-secondary text-danger"
+                onClick={handleDeletePeriod}
+                disabled={!canWrite || !isLatestPeriod || rows.length === 0 || deletingPeriod}
+                title={!isLatestPeriod ? 'Only the latest (open) period can be deleted' : ''}
+              >
+                {deletingPeriod ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                Delete This Period
               </button>
             </>
           )}

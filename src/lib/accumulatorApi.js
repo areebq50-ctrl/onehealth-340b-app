@@ -54,6 +54,34 @@ export async function deleteAccumulatorRow(id) {
   if (error) throw error;
 }
 
+/** Bulk-deletes every accumulator row for one facility+pharmacy+period at once (admin-only, latest period only). Returns the number of rows deleted. */
+export async function deleteAccumulatorPeriod({ facilityId, pharmacyId, month, year }) {
+  const { data, error } = await supabase.rpc('delete_accumulator_period', {
+    p_facility_id: facilityId,
+    p_pharmacy_id: pharmacyId,
+    p_month: month,
+    p_year: year,
+  });
+  if (error) throw error;
+  return data;
+}
+
+/** Count of claims already processed for a facility+pharmacy+period — used to warn before a bulk accumulator-period delete. */
+export async function countClaimsForPeriod(facilityId, pharmacyId, month, year) {
+  const from = `${year}-${String(month).padStart(2, '0')}-01`;
+  const toDate = new Date(year, month, 0).getDate();
+  const to = `${year}-${String(month).padStart(2, '0')}-${String(toDate).padStart(2, '0')}`;
+  const { count, error } = await supabase
+    .from('claims')
+    .select('id', { count: 'exact', head: true })
+    .eq('facility_id', facilityId)
+    .eq('pharmacy_id', pharmacyId)
+    .gte('claim_date', from)
+    .lte('claim_date', to);
+  if (error) throw error;
+  return count ?? 0;
+}
+
 export async function addAccumulatorRow({ facilityId, pharmacyId, month, year, ndc, productName, packSize, qtyOnHand, expDay, price340b, ppu340b, cin, manufacturer }) {
   const { data, error } = await supabase.rpc('add_accumulator_row', {
     p_facility_id: facilityId,

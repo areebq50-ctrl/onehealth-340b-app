@@ -142,3 +142,16 @@ export async function fetchAuditLogByClaim(claimId) {
   if (error) throw error;
   return (data ?? []).map((r) => ({ ...r, userEmail: r.users?.email ?? r.user_id }));
 }
+
+/**
+ * Deletes an entire claim batch (admin-only, latest-period-only). Reverses
+ * its accumulator effect for every matched NDC first (adds dispensed qty
+ * back, logs a claim_reversal audit row), then deletes the claim and its
+ * line items/raw lines. The claim's original claim_dispense audit rows are
+ * never removed — the audit trail is immutable even after the claim itself
+ * is gone.
+ */
+export async function deleteClaim(claimId) {
+  const { error } = await supabase.rpc('delete_claim', { p_claim_id: claimId });
+  if (error) throw error;
+}

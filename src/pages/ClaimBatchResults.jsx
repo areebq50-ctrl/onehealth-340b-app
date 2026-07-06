@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { AlertTriangle, Download, ArrowLeft, Eye, ClipboardList, Package, ScrollText, FileSpreadsheet, Wrench, Loader2 } from 'lucide-react';
+import { AlertTriangle, Download, ArrowLeft, Eye, ClipboardList, Package, ScrollText, FileSpreadsheet, Wrench, Loader2, Trash2 } from 'lucide-react';
 import { fetchClaimDetail } from '../lib/dashboardApi.js';
-import { fetchClaimRawLines, fetchAuditLogByClaim, findAccumulatorRow } from '../lib/claimsApi.js';
+import { fetchClaimRawLines, fetchAuditLogByClaim, findAccumulatorRow, deleteClaim } from '../lib/claimsApi.js';
 import { confirmReplenishmentOrder } from '../lib/accumulatorApi.js';
 import { formatCurrency, formatQty, packsToOrder, signedPacksToOrder, Decimal } from '../lib/calculations.js';
 import { exportDailyClaims, exportReplenishmentReport, exportProcessedWorkbook } from '../lib/excelExport.js';
 import { useToast } from '../context/ToastContext.jsx';
+import { useAuth } from '../context/AuthContext.jsx';
 import { SkeletonTable } from '../components/common/Skeleton.jsx';
 import EmptyState from '../components/common/EmptyState.jsx';
 import DataTable from '../components/common/DataTable.jsx';
@@ -29,6 +30,7 @@ export default function ClaimBatchResults() {
   const { claimId } = useParams();
   const navigate = useNavigate();
   const toast = useToast();
+  const { isAdmin } = useAuth();
   const [loading, setLoading] = useState(true);
   const [claim, setClaim] = useState(null);
   const [lineItems, setLineItems] = useState([]);
@@ -38,6 +40,7 @@ export default function ClaimBatchResults() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [resolveTarget, setResolveTarget] = useState(null);
   const [orderingId, setOrderingId] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -161,6 +164,25 @@ export default function ClaimBatchResults() {
 
   const negativeCount = lineItems.filter((li) => li.qty_after !== null && Number(li.qty_after) < 0).length;
 
+  async function handleDeleteClaim() {
+    if (
+      !window.confirm(
+        `Delete this entire claim batch (${claim.claim_date}, ${claim.pharmacies?.name})? This reverses its accumulator effect ` +
+          `(dispensed qty added back, reimbursement removed) and cannot be undone.`
+      )
+    )
+      return;
+    setDeleting(true);
+    try {
+      await deleteClaim(claim.id);
+      toast.success('Claim batch deleted and its accumulator effect reversed.');
+      navigate('/claims');
+    } catch (err) {
+      toast.error(`Delete failed: ${err.message}`);
+      setDeleting(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <button className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-teal" onClick={() => navigate('/claims')}>
@@ -205,6 +227,12 @@ export default function ClaimBatchResults() {
           >
             <Download className="h-4 w-4" /> Download Standardized Report
           </button>
+          {isAdmin && (
+            <button className="btn-secondary text-danger" onClick={handleDeleteClaim} disabled={deleting}>
+              {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+              Delete Claim Batch
+            </button>
+          )}
         </div>
       </div>
 

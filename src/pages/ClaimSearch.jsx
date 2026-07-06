@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search as SearchIcon, Eye, Download, Inbox } from 'lucide-react';
+import { Search as SearchIcon, Eye, Download, Inbox, Trash2, Loader2 } from 'lucide-react';
 import { useFacility } from '../context/FacilityContext.jsx';
+import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { searchClaimBatches } from '../lib/dashboardApi.js';
+import { deleteClaim } from '../lib/claimsApi.js';
 import { formatCurrency } from '../lib/calculations.js';
 import FacilityPharmacySelector from '../components/common/FacilityPharmacySelector.jsx';
 import DataTable from '../components/common/DataTable.jsx';
@@ -18,6 +20,7 @@ export default function ClaimSearch() {
   const { selectedFacilityId, selectedPharmacyId } = useFacility();
   const toast = useToast();
   const navigate = useNavigate();
+  const { isAdmin } = useAuth();
 
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
@@ -25,6 +28,7 @@ export default function ClaimSearch() {
   const [loading, setLoading] = useState(true);
   const [results, setResults] = useState([]);
   const [previewBatch, setPreviewBatch] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
 
   async function runSearch() {
     setLoading(true);
@@ -61,6 +65,26 @@ export default function ClaimSearch() {
     }
   }
 
+  async function handleDelete(row) {
+    if (
+      !window.confirm(
+        `Delete this entire claim batch (${row.claim_date}, ${row.pharmacyName})? This reverses its accumulator effect ` +
+          `(dispensed qty added back, reimbursement removed) and cannot be undone.`
+      )
+    )
+      return;
+    setDeletingId(row.id);
+    try {
+      await deleteClaim(row.id);
+      toast.success('Claim batch deleted and its accumulator effect reversed.');
+      await runSearch();
+    } catch (err) {
+      toast.error(`Delete failed: ${err.message}`);
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   const columns = [
     { key: 'claim_date', label: 'Claim Date', sortable: true },
     { key: 'facilityName', label: 'Facility', sortable: true },
@@ -88,6 +112,16 @@ export default function ClaimSearch() {
           <button className="btn-secondary px-2 py-1" title="Download processed results" onClick={() => handleDownloadProcessed(r.id)}>
             <Download className="h-3.5 w-3.5" />
           </button>
+          {isAdmin && (
+            <button
+              className="btn-secondary px-2 py-1 text-danger"
+              title="Delete claim batch"
+              disabled={deletingId === r.id}
+              onClick={() => handleDelete(r)}
+            >
+              {deletingId === r.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+            </button>
+          )}
         </div>
       ),
     },

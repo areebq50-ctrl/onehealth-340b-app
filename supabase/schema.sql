@@ -1712,3 +1712,135 @@ $$;
 
 revoke all on function public.delete_pharmacy from public;
 grant execute on function public.delete_pharmacy to authenticated;
+
+-- ============================================================================
+-- PATCH: delete an entire claim batch, and bulk-delete an accumulator
+-- period. Both admin-only, both blocked outside the latest (open) period —
+-- deleting historical data would require also correcting every subsequent
+-- month's rolled-over balance, which these do not attempt, so historical
+-- periods stay read-only exactly like every other write path in this app.
+-- ============================================================================
+
+-- Deletes a claim batch, reversing its accumulator effect for every matched
+-- NDC first (adds the dispensed qty back, same math as the overwrite-reversal
+-- branch of process_claim) and logging a 'claim_reversal' audit row per NDC.
+-- claim_line_items/claim_raw_lines cascade-delete via their FK. The prior
+-- claim_dispense audit rows are NOT deleted — accumulator_audit_log is an
+-- immutable ledger, so the historical record that this claim happened (and
+-- was later reversed) survives even though the claim record itself is gone.
+create or replace function public.delete_claim(p_claim_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_claim record;
+  v_month integer;
+  v_year integer;
+  v_item record;
+  v_acc record;
+  v_prior_qty numeric;
+  v_new_qty numeric;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins may delete a claim batch';
+  end if;
+
+  select * into v_claim from public.claims where id = p_claim_id for update;
+  if not found then
+    raise exception 'Claim % not found', p_claim_id;
+  end if;
+
+  v_month := extract(month from v_claim.claim_date)::integer;
+  v_year := extract(year from v_claim.claim_date)::integer;
+
+  if not public.is_latest_period(v_claim.facility_id, v_claim.pharmacy_id, v_month, v_year) then
+    raise exception 'This claim is in a closed historical period and cannot be deleted — historical periods are read-only';
+  end if;
+
+  for v_item in
+    select * from public.claim_line_items where claim_id = p_claim_id and matched = true
+  loop
+    select * into v_acc
+    from public.accumulator
+    where ndc = v_item.ndc and facility_id = v_claim.facility_id and pharmacy_id = v_claim.pharmacy_id
+      and month = v_month and year = v_year
+    for update;
+
+    if found then
+      v_prior_qty := v_acc.qty_on_hand;
+      v_new_qty := v_prior_qty + v_item.qty_dispensed;
+
+      update public.accumulator
+      set qty_on_hand = v_new_qty,
+          packs_on_hand = case when pack_size is not null and pack_size <> 0 then v_new_qty / pack_size else null end,
+          cost_on_hand_340b = case when ppu_340b is not null then v_new_qty * ppu_340b else null end,
+          updated_at = now()
+      where id = v_acc.id;
+
+      insert into public.accumulator_audit_log
+        (user_id, claim_id, ndc, product_name, prior_qty, qty_dispensed, new_qty, reimbursement_amount, action_type, facility_id, pharmacy_id)
+      values
+        (v_user_id, p_claim_id, v_item.ndc, v_item.product_name, v_prior_qty,
+         -v_item.qty_dispensed, v_new_qty, -coalesce(v_item.reimbursement_owed, 0), 'claim_reversal',
+         v_claim.facility_id, v_claim.pharmacy_id);
+    end if;
+  end loop;
+
+  delete from public.claims where id = p_claim_id;
+end;
+$$;
+
+revoke all on function public.delete_claim from public;
+grant execute on function public.delete_claim to authenticated;
+
+-- Bulk-deletes every accumulator row for one facility+pharmacy+period at
+-- once (e.g. to redo a bad import from scratch), logging one
+-- 'manual_delete' audit row per NDC first — same per-row audit pattern as
+-- delete_accumulator_row, just looped across the whole period.
+create or replace function public.delete_accumulator_period(
+  p_facility_id uuid,
+  p_pharmacy_id uuid,
+  p_month integer,
+  p_year integer
+)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_row record;
+  v_count integer := 0;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins may delete an accumulator period';
+  end if;
+
+  if not public.is_latest_period(p_facility_id, p_pharmacy_id, p_month, p_year) then
+    raise exception 'This accumulator period is closed (historical) and cannot be deleted';
+  end if;
+
+  for v_row in
+    select * from public.accumulator
+    where facility_id = p_facility_id and pharmacy_id = p_pharmacy_id and month = p_month and year = p_year
+  loop
+    insert into public.accumulator_audit_log
+      (user_id, claim_id, ndc, product_name, prior_qty, qty_dispensed, new_qty, reimbursement_amount, action_type, facility_id, pharmacy_id)
+    values
+      (v_user_id, null, v_row.ndc, v_row.product_name, v_row.qty_on_hand, v_row.qty_on_hand, 0, null, 'manual_delete', p_facility_id, p_pharmacy_id);
+    v_count := v_count + 1;
+  end loop;
+
+  delete from public.accumulator
+  where facility_id = p_facility_id and pharmacy_id = p_pharmacy_id and month = p_month and year = p_year;
+
+  return v_count;
+end;
+$$;
+
+revoke all on function public.delete_accumulator_period from public;
+grant execute on function public.delete_accumulator_period to authenticated;
