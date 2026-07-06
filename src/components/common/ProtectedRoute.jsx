@@ -39,8 +39,9 @@ function DeactivatedScreen() {
 // Shown when the users-table check itself failed (RLS denial, network error,
 // missing row, etc.) — distinct from a genuine "inactive" account. Surfacing
 // the real error here means a broken check is visible and debuggable instead
-// of silently bouncing the user back to the login screen.
-function ProfileErrorScreen({ message }) {
+// of silently bouncing the user back to the login screen. `detail` is the
+// structured error object from AuthContext's describeError().
+function ProfileErrorScreen({ detail }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-surface-alt px-4">
       <div className="card max-w-md p-8 text-center">
@@ -51,7 +52,19 @@ function ProfileErrorScreen({ message }) {
         <p className="mb-1 text-sm text-gray-500">
           We signed you in, but couldn&apos;t confirm your account status.
         </p>
-        <p className="mb-6 rounded-lg bg-gray-50 px-3 py-2 font-mono text-xs text-gray-600">{message}</p>
+        <div className="mb-6 space-y-1 rounded-lg bg-gray-50 px-3 py-2 text-left font-mono text-xs text-gray-600">
+          <p><strong>message:</strong> {detail?.message}</p>
+          {detail?.code && <p><strong>code:</strong> {detail.code}</p>}
+          {detail?.details && <p><strong>details:</strong> {detail.details}</p>}
+          {detail?.hint && <p><strong>hint:</strong> {detail.hint}</p>}
+          {detail?.status !== null && detail?.status !== undefined && <p><strong>status:</strong> {detail.status}</p>}
+          {detail?.stack && (
+            <details className="mt-1">
+              <summary className="cursor-pointer select-none text-gray-500">stack trace</summary>
+              <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all">{detail.stack}</pre>
+            </details>
+          )}
+        </div>
         <SignOutButton />
       </div>
     </div>
@@ -72,7 +85,7 @@ export default function ProtectedRoute({ children, adminOnly = false }) {
   if (!session) return <Navigate to="/login" replace />;
 
   if (profileError) {
-    return <ProfileErrorScreen message={profileError} />;
+    return <ProfileErrorScreen detail={profileError} />;
   }
 
   if (!profile?.active) {

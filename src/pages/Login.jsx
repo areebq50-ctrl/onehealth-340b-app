@@ -30,7 +30,12 @@ export default function Login() {
     try {
       await signIn(email, password);
     } catch (err) {
-      setError(err.message ?? 'Unable to sign in. Check your credentials and try again.');
+      // eslint-disable-next-line no-console
+      console.error('[Login] signIn threw:', err, err.detail);
+      setError({
+        message: err.message ?? 'Unable to sign in. Check your credentials and try again.',
+        detail: err.detail ?? null,
+      });
     } finally {
       setSubmitting(false);
     }
@@ -79,7 +84,25 @@ export default function Login() {
             </div>
 
             {error && (
-              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-danger">{error}</div>
+              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-danger">
+                <p className="font-medium">{error.message}</p>
+                {error.detail && (
+                  <div className="mt-2 space-y-1 rounded-md bg-white/60 p-2 font-mono text-xs text-gray-700">
+                    {error.detail.code && <p><strong>code:</strong> {error.detail.code}</p>}
+                    {error.detail.details && <p><strong>details:</strong> {error.detail.details}</p>}
+                    {error.detail.hint && <p><strong>hint:</strong> {error.detail.hint}</p>}
+                    {error.detail.status !== null && error.detail.status !== undefined && (
+                      <p><strong>status:</strong> {error.detail.status}</p>
+                    )}
+                    {error.detail.stack && (
+                      <details className="mt-1">
+                        <summary className="cursor-pointer select-none text-gray-500">stack trace</summary>
+                        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all">{error.detail.stack}</pre>
+                      </details>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
 
             <button type="submit" disabled={submitting} className="btn-primary w-full">

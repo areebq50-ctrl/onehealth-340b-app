@@ -10,6 +10,30 @@ const AuthContext = createContext(null);
 // whole app back to a spinner.
 const IDENTITY_EVENTS = new Set(['SIGNED_IN', 'SIGNED_OUT']);
 
+// Normalizes a PostgREST/Supabase error (message/code/details/hint) OR a
+// thrown JS exception (message/stack) into one shape so the UI can render
+// every field verbatim instead of just `.message`.
+function describeError(source, label) {
+  const structured = {
+    label,
+    message: source?.message || String(source) || 'Unknown error',
+    code: source?.code ?? null,
+    details: source?.details ?? null,
+    hint: source?.hint ?? null,
+    status: source?.status ?? null,
+    stack: source?.stack ?? new Error().stack,
+  };
+  console.error(`[Auth] ${label}:`); // eslint-disable-line no-console
+  console.error('  message:', structured.message); // eslint-disable-line no-console
+  console.error('  code:', structured.code); // eslint-disable-line no-console
+  console.error('  details:', structured.details); // eslint-disable-line no-console
+  console.error('  hint:', structured.hint); // eslint-disable-line no-console
+  console.error('  status:', structured.status); // eslint-disable-line no-console
+  console.error('  raw error object:', source); // eslint-disable-line no-console
+  console.error('  stack:', structured.stack); // eslint-disable-line no-console
+  return structured;
+}
+
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -17,8 +41,9 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   // Always hits the database directly — never a cached value — and reports
-  // the raw Supabase error back to the caller instead of collapsing every
-  // failure mode (RLS denial, network error, missing row) into "no profile".
+  // the full raw Supabase error (message/code/details/hint/status/stack)
+  // back to the caller instead of collapsing every failure mode (RLS
+  // denial, network error, missing row, thrown exception) into one string.
   const loadProfile = useCallback(async (userId) => {
     if (!userId) {
       console.log('[Auth] loadProfile: no user id, clearing profile'); // eslint-disable-line no-console
@@ -27,17 +52,27 @@ export function AuthProvider({ children }) {
       return { data: null, error: null };
     }
     console.log('[Auth] loadProfile: querying public.users for id=', userId); // eslint-disable-line no-console
-    const { data, error } = await supabase.from('users').select('*').eq('id', userId).single();
-    if (error) {
-      console.error('[Auth] loadProfile: query failed:', error.message, error); // eslint-disable-line no-console
+    try {
+      const res = await supabase.from('users').select('*').eq('id', userId).single();
+      console.log('[Auth] loadProfile: raw response', res); // eslint-disable-line no-console
+      const { data, error, status, statusText } = res;
+      if (error) {
+        const structured = describeError({ ...error, status: status ?? error.status }, 'loadProfile: query returned an error');
+        console.error('[Auth] loadProfile: statusText=', statusText); // eslint-disable-line no-console
+        setProfile(null);
+        setProfileError(structured);
+        return { data: null, error: structured };
+      }
+      console.log('[Auth] loadProfile: loaded row', data); // eslint-disable-line no-console
+      setProfile(data);
+      setProfileError(null);
+      return { data, error: null };
+    } catch (thrown) {
+      const structured = describeError(thrown, 'loadProfile: threw an exception (not a query error response)');
       setProfile(null);
-      setProfileError(error.message);
-      return { data: null, error };
+      setProfileError(structured);
+      return { data: null, error: structured };
     }
-    console.log('[Auth] loadProfile: loaded row', { id: data.id, role: data.role, active: data.active }); // eslint-disable-line no-console
-    setProfile(data);
-    setProfileError(null);
-    return { data, error: null };
   }, []);
 
   useEffect(() => {
@@ -89,34 +124,55 @@ export function AuthProvider({ children }) {
 
   const signIn = useCallback(
     async (email, password) => {
-      console.log('[Auth] signIn: attempting password sign-in for', email); // eslint-disable-line no-console
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) {
-        console.error('[Auth] signIn: signInWithPassword failed:', error.message); // eslint-disable-line no-console
-        throw error;
+      try {
+        console.log('[Auth] signIn: step 1 — attempting password sign-in for', email); // eslint-disable-line no-console
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) {
+          const structured = describeError(error, 'signIn: signInWithPassword failed');
+          const err = new Error(error.message);
+          err.detail = structured;
+          throw err;
+        }
+        console.log('[Auth] signIn: step 2 — password auth succeeded for user', data.user.id); // eslint-disable-line no-console
+
+        // Always re-check the users-table row fresh on every login attempt —
+        // never trust a cached/previous profile — so an admin's status
+        // change (e.g. deactivation, or reactivation) takes effect
+        // immediately.
+        console.log('[Auth] signIn: step 3 — querying public.users to verify active/role'); // eslint-disable-line no-console
+        const { data: freshProfile, error: profileFetchError } = await loadProfile(data.user.id);
+
+        if (profileFetchError) {
+          console.error('[Auth] signIn: step 3 failed — users-table check errored, signing back out'); // eslint-disable-line no-console
+          await supabase.auth.signOut();
+          // Distinct from "inactive" — this is a real fetch/RLS/network
+          // error and must be shown to the user verbatim, not silently
+          // swallowed or mislabeled as a deactivated account.
+          const err = new Error('Unable to verify your account.');
+          err.detail = profileFetchError;
+          throw err;
+        }
+
+        console.log('[Auth] signIn: step 3 succeeded — row:', freshProfile); // eslint-disable-line no-console
+
+        if (!freshProfile?.active) {
+          console.warn('[Auth] signIn: step 4 — account is inactive, signing back out'); // eslint-disable-line no-console
+          await supabase.auth.signOut();
+          const err = new Error('Your account has been deactivated. Contact a One.Health Partners administrator for access.');
+          err.detail = { label: 'signIn: account inactive', message: err.message, code: 'INACTIVE', details: null, hint: null, status: null, stack: err.stack };
+          throw err;
+        }
+
+        console.log('[Auth] signIn: step 4 — account verified active, role=', freshProfile.role); // eslint-disable-line no-console
+      } catch (err) {
+        if (!err.detail) {
+          // Not already a structured/described error (e.g. a plain thrown
+          // Error, or an exception from somewhere unexpected) — describe it
+          // now so nothing reaches the UI as a bare, undiagnosable message.
+          err.detail = describeError(err, 'signIn: unhandled exception');
+        }
+        throw err;
       }
-      console.log('[Auth] signIn: password auth succeeded for user', data.user.id); // eslint-disable-line no-console
-
-      // Always re-check the users-table row fresh on every login attempt —
-      // never trust a cached/previous profile — so an admin's status change
-      // (e.g. deactivation, or reactivation) takes effect immediately.
-      const { data: freshProfile, error: profileFetchError } = await loadProfile(data.user.id);
-
-      if (profileFetchError) {
-        console.error('[Auth] signIn: users-table check failed, signing back out:', profileFetchError.message); // eslint-disable-line no-console
-        await supabase.auth.signOut();
-        // Distinct from "inactive" — this is a real fetch/RLS/network error
-        // and must be shown to the user verbatim, not silently swallowed.
-        throw new Error(`Unable to verify your account (${profileFetchError.message}). Please try again.`);
-      }
-
-      if (!freshProfile?.active) {
-        console.warn('[Auth] signIn: account is inactive, signing back out'); // eslint-disable-line no-console
-        await supabase.auth.signOut();
-        throw new Error('Your account has been deactivated. Contact a One.Health Partners administrator for access.');
-      }
-
-      console.log('[Auth] signIn: account verified active, role=', freshProfile.role); // eslint-disable-line no-console
     },
     [loadProfile]
   );
