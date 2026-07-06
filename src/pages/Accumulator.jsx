@@ -430,7 +430,12 @@ export default function Accumulator() {
         period={period}
         onAdded={async () => {
           setAddOpen(false);
-          await refreshRows();
+          // Use loadPeriods (not refreshRows) since this may be this
+          // pharmacy's very first-ever NDC — period can still be null here,
+          // and loadPeriods safely (re)derives it and triggers the rows
+          // effect below to load, whereas refreshRows would crash on
+          // period.month/year being null.
+          await loadPeriods();
         }}
       />
 
@@ -442,7 +447,9 @@ export default function Accumulator() {
         period={period}
         onImported={async () => {
           setImportOpen(false);
-          await refreshRows();
+          // Same reasoning as onAdded above — this may be the first-ever
+          // import for this pharmacy, so period can still be null.
+          await loadPeriods();
         }}
       />
 
@@ -465,7 +472,13 @@ export default function Accumulator() {
 
 function AddNdcModal({ open, onClose, facilityId, pharmacyId, period, onAdded }) {
   const toast = useToast();
+  const now = new Date();
   const [form, setForm] = useState({ ndc: '', productName: '', packSize: '', qtyOnHand: '', expDay: '', price340b: '', ppu340b: '', cin: '', manufacturer: '' });
+  // When there's no existing period yet (this pharmacy's very first NDC),
+  // `period` is null — fall back to the current month/year instead of
+  // crashing on period.month. The admin can still change it below.
+  const [month, setMonth] = useState(period?.month ?? now.getMonth() + 1);
+  const [year, setYear] = useState(period?.year ?? now.getFullYear());
   const [saving, setSaving] = useState(false);
 
   async function handleSubmit() {
@@ -483,8 +496,8 @@ function AddNdcModal({ open, onClose, facilityId, pharmacyId, period, onAdded })
       await addAccumulatorRow({
         facilityId,
         pharmacyId,
-        month: period.month,
-        year: period.year,
+        month,
+        year,
         ndc,
         productName: form.productName,
         packSize: form.packSize || null,
@@ -507,7 +520,32 @@ function AddNdcModal({ open, onClose, facilityId, pharmacyId, period, onAdded })
   return (
     <Modal open={open} onClose={onClose} title="Add New NDC">
       <div className="space-y-3">
+        {!period && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-warning">
+            This pharmacy has no accumulator period yet — choose the month/year this starting balance belongs to below.
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="label-text">Month</label>
+            <select className="input-field" value={month} disabled={Boolean(period)} onChange={(e) => setMonth(Number(e.target.value))}>
+              {MONTH_NAMES.map((m, i) => (
+                <option key={m} value={i + 1}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label-text">Year</label>
+            <input
+              className="input-field"
+              type="number"
+              value={year}
+              disabled={Boolean(period)}
+              onChange={(e) => setYear(Number(e.target.value))}
+            />
+          </div>
           <div>
             <label className="label-text">NDC *</label>
             <input className="input-field" value={form.ndc} onChange={(e) => setForm((f) => ({ ...f, ndc: e.target.value }))} />
@@ -561,9 +599,15 @@ function AddNdcModal({ open, onClose, facilityId, pharmacyId, period, onAdded })
 
 function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported }) {
   const toast = useToast();
+  const now = new Date();
   const [parsed, setParsed] = useState(null);
   const [error, setError] = useState(null);
   const [importing, setImporting] = useState(false);
+  // `period` is null the very first time this pharmacy is imported (no
+  // accumulator rows exist yet to derive a period from) — fall back to the
+  // current month/year instead of crashing, and let the admin correct it.
+  const [month, setMonth] = useState(period?.month ?? now.getMonth() + 1);
+  const [year, setYear] = useState(period?.year ?? now.getFullYear());
 
   async function handleFile(e) {
     const file = e.target.files?.[0];
@@ -585,8 +629,8 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
       const count = await importAccumulatorRows({
         facilityId,
         pharmacyId,
-        month: period.month,
-        year: period.year,
+        month,
+        year,
         rows: parsed.rows.map((r) => ({
           ndc: r.ndc,
           product_name: r.productName,
@@ -620,13 +664,40 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
       title="Import Accumulator from Excel"
       wide
     >
+      {!period && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-warning">
+          This pharmacy has no accumulator period yet — choose the month/year this starting balance belongs to below.
+        </div>
+      )}
+      <div className="mb-4 flex flex-wrap items-end gap-3">
+        <div>
+          <label className="label-text">Month</label>
+          <select className="input-field" value={month} disabled={Boolean(period)} onChange={(e) => setMonth(Number(e.target.value))}>
+            {MONTH_NAMES.map((m, i) => (
+              <option key={m} value={i + 1}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="label-text">Year</label>
+          <input
+            className="input-field w-28"
+            type="number"
+            value={year}
+            disabled={Boolean(period)}
+            onChange={(e) => setYear(Number(e.target.value))}
+          />
+        </div>
+      </div>
       <input type="file" accept=".xlsx,.xls" onChange={handleFile} className="mb-4 block w-full text-sm" />
       {error && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-danger">{error}</div>}
       {parsed && (
         <>
           <p className="mb-2 text-sm text-gray-500">
             {parsed.rows.length} valid rows parsed{parsed.skippedRows.length > 0 ? `, ${parsed.skippedRows.length} skipped` : ''}. Review before
-            confirming — this will upsert into the current pharmacy&apos;s accumulator for this period.
+            confirming — this will upsert into {MONTH_NAMES[month - 1]} {year} for this pharmacy.
           </p>
           <div className="max-h-72 overflow-auto rounded-lg border border-gray-100">
             <table className="w-full text-left text-xs">
