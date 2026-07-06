@@ -86,7 +86,7 @@ create trigger validate_claims_pharmacy_facility
 -- ----------------------------------------------------------------------------
 -- 3. is_latest_period becomes pharmacy-scoped (old 3-arg version dropped).
 -- ----------------------------------------------------------------------------
-drop function if exists public.is_latest_period(uuid, integer, integer);
+drop function if exists public.is_latest_period(uuid, integer, integer) CASCADE;
 
 create or replace function public.is_latest_period(p_facility_id uuid, p_pharmacy_id uuid, p_month integer, p_year integer)
 returns boolean
