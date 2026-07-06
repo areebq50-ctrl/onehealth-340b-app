@@ -1607,3 +1607,29 @@ $$;
 
 revoke all on function public.confirm_replenishment_order from public;
 grant execute on function public.confirm_replenishment_order to authenticated;
+
+-- ============================================================================
+-- PATCH: explicit table/sequence grants for the `authenticated` role.
+--
+-- Postgres checks base GRANT privileges BEFORE it evaluates Row Level
+-- Security policies. If `authenticated` was never granted table-level
+-- access (this happens when a project's schema is set up without
+-- Supabase's usual "alter default privileges" bootstrap already in place),
+-- every query — even ones RLS would otherwise allow — fails immediately
+-- with "permission denied for table X", and RLS is never reached at all.
+--
+-- This grants broad table/sequence privileges to `authenticated` and
+-- leaves RLS as the sole real security boundary, exactly how every policy
+-- above was already designed: tables like claims/claim_line_items/
+-- accumulator_audit_log have zero client-facing INSERT/UPDATE/DELETE
+-- policies, so granting the base privilege here does not open up direct
+-- writes to them — RLS still has no permissive policy for those
+-- operations, so they remain blocked, and the only path in stays the
+-- SECURITY DEFINER RPCs (which write as the table owner regardless of
+-- these grants). This is purely an unblocking fix, not a security change.
+-- ============================================================================
+grant usage on schema public to authenticated;
+grant select, insert, update, delete on all tables in schema public to authenticated;
+grant usage, select on all sequences in schema public to authenticated;
+alter default privileges in schema public grant select, insert, update, delete on tables to authenticated;
+alter default privileges in schema public grant usage, select on sequences to authenticated;
