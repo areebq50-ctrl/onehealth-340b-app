@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Download, Plus, Upload, CalendarRange, Loader2, Lock, Pencil, Trash2, AlertTriangle } from 'lucide-react';
+import { Download, Plus, Upload, FileText, CalendarRange, Loader2, Lock, Pencil, Trash2, AlertTriangle } from 'lucide-react';
 import { useFacility } from '../context/FacilityContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
@@ -13,10 +13,12 @@ import {
   deleteAccumulatorRow,
   deleteAccumulatorPeriod,
   countClaimsForPeriod,
+  receiveInvoiceBulk,
 } from '../lib/accumulatorApi.js';
 import { parseAccumulatorXlsx } from '../parsers/accumulatorXlsxParser.js';
+import { parseCardinalHealthInvoice } from '../parsers/cardinalHealthInvoiceParser.js';
 import { exportAccumulator } from '../lib/excelExport.js';
-import { formatCurrency, formatQty, packsOnHand, costOnHand340b } from '../lib/calculations.js';
+import { formatCurrency, formatQty, packsOnHand, costOnHand340b, Decimal } from '../lib/calculations.js';
 import { normalizeNdc } from '../lib/ndc.js';
 import { getExpiryTone, EXPIRY_TONE_CLASSES } from '../components/accumulator/expiry.js';
 import DataTable from '../components/common/DataTable.jsx';
@@ -122,6 +124,7 @@ export default function Accumulator() {
   const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [rolloverOpen, setRolloverOpen] = useState(false);
+  const [receiveOpen, setReceiveOpen] = useState(false);
   const [deletingPeriod, setDeletingPeriod] = useState(false);
 
   const [filters, setFilters] = useState(() => ({ ...DEFAULT_FILTERS, ...loadStoredFilters() }));
@@ -329,6 +332,14 @@ export default function Accumulator() {
               <button className="btn-secondary" onClick={() => setImportOpen(true)} disabled={!canWrite} title={!canWrite ? 'Select a specific pharmacy to import' : ''}>
                 <Upload className="h-4 w-4" /> Import Excel
               </button>
+              <button
+                className="btn-secondary"
+                onClick={() => setReceiveOpen(true)}
+                disabled={!canWrite || !isLatestPeriod || rows.length === 0}
+                title={!isLatestPeriod ? 'Start or select the current period first' : ''}
+              >
+                <FileText className="h-4 w-4" /> Upload Invoice
+              </button>
               <button className="btn-secondary" onClick={() => setRolloverOpen(true)} disabled={!canWrite} title={!canWrite ? 'Select a specific pharmacy to roll over' : ''}>
                 <CalendarRange className="h-4 w-4" /> Start New Month
               </button>
@@ -507,6 +518,18 @@ export default function Accumulator() {
         onRolledOver={async () => {
           setRolloverOpen(false);
           await loadPeriods();
+        }}
+      />
+
+      <ReceiveInvoiceModal
+        open={receiveOpen}
+        onClose={() => setReceiveOpen(false)}
+        facilityId={selectedFacilityId}
+        pharmacyId={selectedPharmacyId}
+        currentRows={rows}
+        onReceived={async () => {
+          setReceiveOpen(false);
+          await refreshRows();
         }}
       />
     </div>
@@ -871,6 +894,187 @@ function RolloverModal({ open, onClose, facilityId, pharmacyId, facilityName, ph
             <button className="btn-primary" onClick={handleConfirm} disabled={rollingOver}>
               {rollingOver && <Loader2 className="h-4 w-4 animate-spin" />}
               Confirm Rollover
+            </button>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+const RECEIVE_STATUS_LABEL = {
+  ok: 'Ready',
+  invalid_ndc: 'Not an NDC',
+  invalid_size: 'Ambiguous size',
+  backordered: 'Backordered',
+  unmatched: 'Not in accumulator',
+};
+const RECEIVE_STATUS_CLASS = {
+  ok: 'bg-green-50 text-success',
+  invalid_ndc: 'bg-gray-100 text-gray-600',
+  invalid_size: 'bg-amber-50 text-warning',
+  backordered: 'bg-gray-100 text-gray-600',
+  unmatched: 'bg-amber-50 text-warning',
+};
+
+/**
+ * Upload a wholesaler invoice/order PDF and apply it to the running
+ * balance: New Balance = Current Balance + (Pack Size x Invoiced Qty) —
+ * computed with decimal.js, never native arithmetic. Every parsed line is
+ * shown with a status; only "Ready" lines (valid NDC, valid single numeric
+ * size, actually invoiced, matched to a row in the CURRENT period) are ever
+ * submitted — everything else is visibly skipped with a reason, never
+ * silently guessed or dropped.
+ */
+function ReceiveInvoiceModal({ open, onClose, facilityId, pharmacyId, currentRows, onReceived }) {
+  const toast = useToast();
+  const [parsedRows, setParsedRows] = useState(null);
+  const [error, setError] = useState(null);
+  const [invoiceNumber, setInvoiceNumber] = useState('');
+  const [receiving, setReceiving] = useState(false);
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError(null);
+    setParsedRows(null);
+    const buf = await file.arrayBuffer();
+    const result = await parseCardinalHealthInvoice(buf);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+
+    const byNdc = new Map(currentRows.map((r) => [r.ndc, r]));
+
+    const enriched = result.rows.map((r) => {
+      const accRow = r.ndc ? byNdc.get(r.ndc) : null;
+      let status = 'ok';
+      let reason = null;
+      if (r.invalidNdc) {
+        status = 'invalid_ndc';
+        reason = 'NDC/UPC could not be normalized to an 11-digit NDC (likely a UPC-coded OTC item) — enter manually if needed.';
+      } else if (r.backordered) {
+        status = 'backordered';
+        reason = 'Invoiced qty is 0 (backordered this shipment) — nothing to add.';
+      } else if (r.invalidSize) {
+        status = 'invalid_size';
+        reason = `Could not determine a single numeric pack size from "${r.sizeRaw}" (e.g. a compound "3X28" pack) — enter manually.`;
+      } else if (!accRow) {
+        status = 'unmatched';
+        reason = "NDC not found in this pharmacy's current accumulator period.";
+      }
+
+      const qtyToAdd = status === 'ok' ? new Decimal(r.sizeNumeric).times(r.invoicedQty) : null;
+      const newBalance = status === 'ok' ? new Decimal(accRow.qty_on_hand ?? 0).plus(qtyToAdd) : null;
+
+      return {
+        ...r,
+        accumulatorId: accRow?.id ?? null,
+        currentBalance: accRow?.qty_on_hand ?? null,
+        qtyToAdd,
+        newBalance,
+        status,
+        reason,
+      };
+    });
+
+    setParsedRows(enriched);
+  }
+
+  const validRows = parsedRows?.filter((r) => r.status === 'ok') ?? [];
+
+  async function handleConfirm() {
+    if (validRows.length === 0) return;
+    setReceiving(true);
+    try {
+      const count = await receiveInvoiceBulk({
+        facilityId,
+        pharmacyId,
+        lines: validRows.map((r) => ({ accumulatorId: r.accumulatorId, qtyReceived: r.qtyToAdd.toNumber(), unitCost: r.unitPrice })),
+        invoiceNumber: invoiceNumber || null,
+      });
+      toast.success(`Received ${count} NDC${count === 1 ? '' : 's'} into the accumulator.`);
+      setParsedRows(null);
+      setInvoiceNumber('');
+      onReceived();
+    } catch (err) {
+      toast.error(`Failed to receive invoice — no changes were made: ${err.message}`);
+    } finally {
+      setReceiving(false);
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={() => {
+        onClose();
+        setParsedRows(null);
+        setError(null);
+      }}
+      title="Upload Invoice / Order"
+      wide
+    >
+      <p className="mb-3 text-sm text-gray-500">
+        Upload a wholesaler invoice PDF (Cardinal Health &quot;invoiceReprint&quot; layout). For each line, the quantity added
+        to the running balance is <strong>Pack Size (SIZE column) &times; Invoiced Qty</strong> — never the invoiced qty alone.
+      </p>
+      <input type="file" accept=".pdf" onChange={handleFile} className="mb-4 block w-full text-sm" />
+      {error && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-danger">{error}</div>}
+      {parsedRows && (
+        <>
+          <div className="mb-3 flex flex-wrap items-end gap-3">
+            <div className="min-w-[200px] flex-1">
+              <label className="label-text">Invoice / Reference # (optional)</label>
+              <input
+                className="input-field"
+                value={invoiceNumber}
+                onChange={(e) => setInvoiceNumber(e.target.value)}
+                placeholder="e.g. 7480837981"
+              />
+            </div>
+          </div>
+          <p className="mb-2 text-sm text-gray-500">
+            {validRows.length} of {parsedRows.length} lines ready to apply. Rows marked below need manual review and will be
+            skipped — no accumulator changes are made for them.
+          </p>
+          <div className="max-h-96 overflow-auto rounded-lg border border-gray-100">
+            <table className="w-full min-w-max text-left text-xs">
+              <thead className="sticky top-0 bg-surface-alt">
+                <tr>
+                  {['NDC', 'Description', 'Size', 'Invoiced Qty', 'Qty to Add', 'Current Balance', 'New Balance', 'Status'].map((h) => (
+                    <th key={h} className="whitespace-nowrap px-3 py-2 font-semibold text-navy">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {parsedRows.map((r, i) => (
+                  <tr key={i} className={i % 2 ? 'bg-surface-alt' : 'bg-white'} title={r.reason ?? ''}>
+                    <td className="whitespace-nowrap px-3 py-1.5 font-mono">{r.ndc ?? r.ndcRaw}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5">{r.description}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5">{r.sizeRaw ?? '—'}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5">{r.invoicedQty ?? '—'}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5 font-semibold">{r.qtyToAdd ? formatQty(r.qtyToAdd) : '—'}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5">{r.currentBalance !== null ? formatQty(r.currentBalance) : '—'}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5">{r.newBalance ? formatQty(r.newBalance) : '—'}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5">
+                      <span className={`badge ${RECEIVE_STATUS_CLASS[r.status]}`}>{RECEIVE_STATUS_LABEL[r.status]}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <button className="btn-secondary" onClick={onClose} disabled={receiving}>
+              Cancel
+            </button>
+            <button className="btn-primary" onClick={handleConfirm} disabled={receiving || validRows.length === 0}>
+              {receiving && <Loader2 className="h-4 w-4 animate-spin" />}
+              Confirm — Add {validRows.length} NDC{validRows.length === 1 ? '' : 's'} to Accumulator
             </button>
           </div>
         </>

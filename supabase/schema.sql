@@ -1844,3 +1844,109 @@ $$;
 
 revoke all on function public.delete_accumulator_period from public;
 grant execute on function public.delete_accumulator_period to authenticated;
+
+-- ============================================================================
+-- PATCH: bulk-receive a wholesaler invoice/order into the accumulator.
+--
+-- Distinct from confirm_replenishment_order (one NDC, manual qty entry) —
+-- this takes a whole invoice's worth of already-matched
+-- {accumulator_id, qty_received, unit_cost} lines (the frontend parses the
+-- invoice PDF, computes qty_received = pack size x invoiced qty for each
+-- line with decimal.js, and matches NDCs against the current accumulator
+-- before calling this), and applies every line atomically: any failure
+-- (e.g. a historical/closed period) rolls back every row this call would
+-- have touched, so an invoice is never half-applied.
+-- ============================================================================
+create or replace function public.receive_invoice_bulk(
+  p_facility_id uuid,
+  p_pharmacy_id uuid,
+  p_lines jsonb,
+  p_invoice_number text default null,
+  p_notes text default null
+)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_line jsonb;
+  v_row record;
+  v_qty_received numeric;
+  v_unit_cost numeric;
+  v_new_qty numeric;
+  v_packs numeric;
+  v_cost numeric;
+  v_order_notes text;
+  v_count integer := 0;
+begin
+  if not public.is_active_user() then
+    raise exception 'User is not an active platform user';
+  end if;
+
+  if not exists (
+    select 1 from public.pharmacy_facilities where pharmacy_id = p_pharmacy_id and facility_id = p_facility_id
+  ) then
+    raise exception 'Pharmacy % does not belong to facility %', p_pharmacy_id, p_facility_id;
+  end if;
+
+  if p_lines is null or jsonb_array_length(p_lines) = 0 then
+    raise exception 'No invoice lines supplied';
+  end if;
+
+  for v_line in select * from jsonb_array_elements(p_lines)
+  loop
+    v_qty_received := (v_line->>'qty_received')::numeric;
+    if v_qty_received is null or v_qty_received <= 0 then
+      raise exception 'qty_received must be a positive number for accumulator row %', v_line->>'accumulator_id';
+    end if;
+
+    select * into v_row
+    from public.accumulator
+    where id = (v_line->>'accumulator_id')::uuid
+      and facility_id = p_facility_id and pharmacy_id = p_pharmacy_id
+    for update;
+
+    if not found then
+      raise exception 'Accumulator row % not found for this facility/pharmacy', v_line->>'accumulator_id';
+    end if;
+
+    if not public.is_latest_period(v_row.facility_id, v_row.pharmacy_id, v_row.month, v_row.year) then
+      raise exception 'NDC % is in a closed historical period and cannot receive an order', v_row.ndc;
+    end if;
+
+    v_unit_cost := nullif(v_line->>'unit_cost', '')::numeric;
+    v_new_qty := v_row.qty_on_hand + v_qty_received;
+    v_packs := case when v_row.pack_size is not null and v_row.pack_size <> 0 then v_qty_received / v_row.pack_size else null end;
+    v_cost := case when v_unit_cost is not null then v_qty_received * v_unit_cost else null end;
+    v_order_notes := coalesce(p_notes, '') || case when p_invoice_number is not null then ' (Invoice ' || p_invoice_number || ')' else '' end;
+
+    update public.accumulator
+    set qty_on_hand = v_new_qty,
+        packs_on_hand = case when v_row.pack_size is not null and v_row.pack_size <> 0 then v_new_qty / v_row.pack_size else null end,
+        cost_on_hand_340b = case when v_row.ppu_340b is not null then v_new_qty * v_row.ppu_340b else null end,
+        updated_at = now()
+    where id = v_row.id;
+
+    insert into public.accumulator_orders
+      (accumulator_id, ndc, product_name, facility_id, pharmacy_id, month, year, qty_ordered, packs_ordered, unit_cost_340b, total_cost, ordered_by, notes)
+    values
+      (v_row.id, v_row.ndc, v_row.product_name, v_row.facility_id, v_row.pharmacy_id, v_row.month, v_row.year,
+       v_qty_received, v_packs, v_unit_cost, v_cost, v_user_id, nullif(trim(v_order_notes), ''));
+
+    insert into public.accumulator_audit_log
+      (user_id, claim_id, ndc, product_name, prior_qty, qty_dispensed, new_qty, reimbursement_amount, action_type, facility_id, pharmacy_id)
+    values
+      (v_user_id, null, v_row.ndc, v_row.product_name, v_row.qty_on_hand, -v_qty_received, v_new_qty, null, 'order_received',
+       v_row.facility_id, v_row.pharmacy_id);
+
+    v_count := v_count + 1;
+  end loop;
+
+  return v_count;
+end;
+$$;
+
+revoke all on function public.receive_invoice_bulk from public;
+grant execute on function public.receive_invoice_bulk to authenticated;

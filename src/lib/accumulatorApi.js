@@ -166,6 +166,30 @@ export async function confirmReplenishmentOrder({ accumulatorId, qtyOrdered, not
   return data;
 }
 
+/**
+ * Bulk-applies an already-parsed, already-matched wholesaler invoice: each
+ * line is {accumulatorId, qtyReceived, unitCost}. qtyReceived must already
+ * be computed as Pack Size x Invoiced Qty via decimal.js by the caller —
+ * this function does no arithmetic of its own, it only threads the
+ * pre-computed numbers through to the RPC. Applied atomically; any failing
+ * line (e.g. a closed historical period) rolls back the whole batch.
+ */
+export async function receiveInvoiceBulk({ facilityId, pharmacyId, lines, invoiceNumber, notes }) {
+  const { data, error } = await supabase.rpc('receive_invoice_bulk', {
+    p_facility_id: facilityId,
+    p_pharmacy_id: pharmacyId,
+    p_lines: lines.map((l) => ({
+      accumulator_id: l.accumulatorId,
+      qty_received: l.qtyReceived,
+      unit_cost: l.unitCost ?? null,
+    })),
+    p_invoice_number: invoiceNumber ?? null,
+    p_notes: notes ?? null,
+  });
+  if (error) throw error;
+  return data;
+}
+
 export async function importAccumulatorRows({ facilityId, pharmacyId, month, year, rows }) {
   const { data, error } = await supabase.rpc('import_accumulator_rows', {
     p_facility_id: facilityId,
