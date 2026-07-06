@@ -5,13 +5,21 @@ import { useAuth } from '../context/AuthContext.jsx';
 import Logo from '../components/common/Logo.jsx';
 
 export default function Login() {
-  const { session, signIn, loading: authLoading } = useAuth();
+  const { session, profile, signIn, loading: authLoading } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
-  if (!authLoading && session) {
+  // Gate on the verified, active profile — not just `session` — so a
+  // just-created session can never navigate away before the users-table
+  // check has actually confirmed the account is active. Checking `session`
+  // alone here was the root cause of the login flash/bounce bug: `session`
+  // can flip true a render or two before the profile check resolves (or
+  // before signIn() decides to sign back out for an inactive account), which
+  // briefly satisfied this condition and navigated to a protected page that
+  // then bounced right back once the real (inactive) status caught up.
+  if (!authLoading && session && profile?.active) {
     return <Navigate to="/" replace />;
   }
 
