@@ -11,16 +11,17 @@ export function AuthProvider({ children }) {
   const loadProfile = useCallback(async (userId) => {
     if (!userId) {
       setProfile(null);
-      return;
+      return null;
     }
     const { data, error } = await supabase.from('users').select('*').eq('id', userId).single();
     if (error) {
       // eslint-disable-next-line no-console
       console.error('Failed to load user profile:', error.message);
       setProfile(null);
-      return;
+      return null;
     }
     setProfile(data);
+    return data;
   }, []);
 
   useEffect(() => {
@@ -44,10 +45,24 @@ export function AuthProvider({ children }) {
     };
   }, [loadProfile]);
 
-  const signIn = useCallback(async (email, password) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) throw error;
-  }, []);
+  const signIn = useCallback(
+    async (email, password) => {
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+
+      // Always re-fetch the profile fresh from the database on every login
+      // attempt — never trust a cached/previous profile — so a status change
+      // made by an admin (e.g. deactivation) takes effect immediately without
+      // requiring a redeploy or waiting for a token refresh.
+      const freshProfile = await loadProfile(data.user.id);
+
+      if (!freshProfile?.active) {
+        await supabase.auth.signOut();
+        throw new Error('Your account has been deactivated. Contact a One.Health Partners administrator for access.');
+      }
+    },
+    [loadProfile]
+  );
 
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
