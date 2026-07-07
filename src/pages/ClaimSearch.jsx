@@ -106,7 +106,7 @@ export default function ClaimSearch() {
             className="font-semibold text-danger hover:underline"
             onClick={(e) => {
               e.stopPropagation();
-              navigate(`/claims/${r.id}`, { state: { tab: 'Replenishment by NDC' } });
+              navigate(`/claims/${r.id}`, { state: { tab: 'Replenishment by NDC', filter: 'unmatched' } });
             }}
             title="View unmatched NDCs for this batch"
           >

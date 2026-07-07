@@ -16,13 +16,14 @@ import UnmatchedNdcModal from '../components/claims/UnmatchedNdcModal.jsx';
 
 const TABS = ['Overview', 'All Claims', 'Replenishment by NDC', 'Accumulator Changes & Audit'];
 
-function StatCard({ label, value, tone = 'navy' }) {
+function StatCard({ label, value, tone = 'navy', onClick }) {
   const tones = { navy: 'text-navy', teal: 'text-teal-700', coral: 'text-coral-700', danger: 'text-danger', warning: 'text-warning' };
+  const Tag = onClick ? 'button' : 'div';
   return (
-    <div className="card p-4">
+    <Tag className={`card p-4 text-left ${onClick ? 'cursor-pointer transition-shadow hover:shadow-md' : ''}`} onClick={onClick}>
       <p className="text-xs font-medium uppercase tracking-wide text-gray-500">{label}</p>
       <p className={`mt-1 text-xl font-bold ${tones[tone]}`}>{value}</p>
-    </div>
+    </Tag>
   );
 }
 
@@ -38,10 +39,16 @@ export default function ClaimBatchResults() {
   const [rawLines, setRawLines] = useState([]);
   const [auditLog, setAuditLog] = useState([]);
   const [tab, setTab] = useState(() => (TABS.includes(location.state?.tab) ? location.state.tab : 'Overview'));
+  const [replenStatusFilter, setReplenStatusFilter] = useState(() => (location.state?.filter === 'unmatched' ? 'unmatched' : 'all'));
   const [previewOpen, setPreviewOpen] = useState(false);
   const [resolveTarget, setResolveTarget] = useState(null);
   const [orderingId, setOrderingId] = useState(null);
   const [deleting, setDeleting] = useState(false);
+
+  function goToUnmatched() {
+    setReplenStatusFilter('unmatched');
+    setTab('Replenishment by NDC');
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -269,7 +276,12 @@ export default function ClaimBatchResults() {
             <StatCard label="Distinct NDC Count" value={claim.distinct_ndc_count ?? '—'} />
             <StatCard label="Total Qty Dispensed" value={formatQty(claim.total_qty_dispensed)} />
             <StatCard label="Matched NDCs" value={claim.matched_count ?? 0} tone="teal" />
-            <StatCard label="Unmatched NDCs" value={claim.unmatched_count ?? 0} tone={claim.unmatched_count > 0 ? 'coral' : 'navy'} />
+            <StatCard
+              label="Unmatched NDCs"
+              value={claim.unmatched_count ?? 0}
+              tone={claim.unmatched_count > 0 ? 'coral' : 'navy'}
+              onClick={claim.unmatched_count > 0 ? goToUnmatched : undefined}
+            />
             <StatCard label="Estimated Reimbursement" value={formatCurrency(claim.total_reimbursement)} tone="teal" />
             <StatCard label="Total Full Packages to Order" value={replenishmentTotals.totalRecommendedPacks} tone="warning" />
             <StatCard label="Negative On-Hand NDCs" value={negativeCount} tone={negativeCount > 0 ? 'danger' : 'navy'} />
@@ -286,7 +298,7 @@ export default function ClaimBatchResults() {
                 {claim.unmatched_count} NDC{claim.unmatched_count > 1 ? 's' : ''} still need review — every unmatched NDC must be
                 added, matched, or explicitly skipped with a reason.
               </span>
-              <button className="btn-secondary" onClick={() => setTab('Replenishment by NDC')}>
+              <button className="btn-secondary" onClick={goToUnmatched}>
                 <Wrench className="h-4 w-4" /> Review Now
               </button>
             </div>
@@ -310,6 +322,8 @@ export default function ClaimBatchResults() {
           onResolveClick={(lineItemId) => setResolveTarget(lineItems.find((li) => li.id === lineItemId))}
           onOrderConfirmed={load}
           claim={claim}
+          statusFilter={replenStatusFilter}
+          setStatusFilter={setReplenStatusFilter}
           onExport={() =>
             exportReplenishmentReport(replenishment, {
               facilityName: claim.facilities?.name,
@@ -346,9 +360,11 @@ export default function ClaimBatchResults() {
 }
 
 function AllClaimsTab({ rows, onResolveClick }) {
+  const [unmatchedOnly, setUnmatchedOnly] = useState(false);
   if (rows.length === 0) {
     return <EmptyState icon={ClipboardList} title="No claim line detail available" message="This batch has no per-RX ledger rows recorded." />;
   }
+  const visibleRows = unmatchedOnly ? rows.filter((r) => !r.matched) : rows;
   const columns = [
     { key: 'rx_number', label: 'RX#', sortable: true },
     { key: 'ndc', label: 'NDC', sortable: true, render: (r) => <span className="font-mono text-xs">{r.ndc}</span> },
@@ -377,27 +393,33 @@ function AllClaimsTab({ rows, onResolveClick }) {
           <span className="badge bg-green-50 text-success">Matched</span>
         ) : (
           <button
-            className="badge bg-amber-50 text-warning hover:underline"
+            className="rounded-md bg-teal-700 px-2 py-1 text-xs font-semibold text-white hover:bg-teal-800"
             title="Look up this NDC and match it to the accumulator"
             onClick={(e) => {
               e.stopPropagation();
               onResolveClick?.(r.ndc);
             }}
           >
-            Unmatched — Resolve
+            Assign NDC
           </button>
         ),
     },
   ];
   return (
-    <DataTable
-      columns={columns}
-      rows={rows}
-      rowKey={(r) => r.id}
-      searchPlaceholder="Search RX#, NDC, drug name, prescriber..."
-      pageSize={50}
-      rowClassName={(r) => (!r.matched ? 'bg-amber-50/40' : '')}
-    />
+    <div className="space-y-3">
+      <label className="flex w-fit items-center gap-2 text-sm text-gray-600">
+        <input type="checkbox" checked={unmatchedOnly} onChange={(e) => setUnmatchedOnly(e.target.checked)} />
+        Show unmatched only
+      </label>
+      <DataTable
+        columns={columns}
+        rows={visibleRows}
+        rowKey={(r) => r.id}
+        searchPlaceholder="Search RX#, NDC, drug name, prescriber..."
+        pageSize={50}
+        rowClassName={(r) => (!r.matched ? 'bg-amber-50/40' : '')}
+      />
+    </div>
   );
 }
 
@@ -478,71 +500,148 @@ function OrderRow({ row, onOrderConfirmed, orderingId, setOrderingId, claim }) {
   );
 }
 
-function ReplenishmentTab({ dailyResults, orderPanelRows, orderingId, setOrderingId, onResolveClick, onOrderConfirmed, claim, onExport }) {
+const STATUS_FILTER_OPTIONS = [
+  { value: 'all', label: 'All Statuses' },
+  { value: 'unmatched', label: 'Needs Review (Unmatched)' },
+  { value: 'red', label: 'Needs Order' },
+  { value: 'green', label: 'Balanced' },
+  { value: 'skipped', label: 'Skipped' },
+];
+
+const STATUS_SEARCH_LABEL = {
+  green: 'Balanced',
+  red: 'Needs Order',
+  unmatched: 'Needs Review Unmatched Assign',
+  skipped: 'Skipped',
+};
+
+function ReplenishmentTab({
+  dailyResults,
+  orderPanelRows,
+  orderingId,
+  setOrderingId,
+  onResolveClick,
+  onOrderConfirmed,
+  claim,
+  onExport,
+  statusFilter,
+  setStatusFilter,
+}) {
   if (dailyResults.length === 0) {
     return <EmptyState icon={Package} title="No replenishment data is available for this claim batch" message="No NDCs were dispensed in this batch." />;
   }
+
+  const filteredResults = statusFilter === 'all' ? dailyResults : dailyResults.filter((r) => r.status === statusFilter);
+
+  const dailyColumns = [
+    { key: 'ndc', label: 'NDC', sortable: true, render: (r) => <span className="font-mono text-xs">{r.ndc}</span> },
+    { key: 'productName', label: 'Product Name', sortable: true, render: (r) => r.productName || '—' },
+    { key: 'packSize', label: 'Pack Size', sortable: true, accessor: (r) => r.packSize ?? null, render: (r) => r.packSize ?? '—' },
+    {
+      key: 'startingBalance',
+      label: 'Starting Balance (Qty)',
+      sortable: true,
+      accessor: (r) => (r.startingBalance !== null ? Number(r.startingBalance) : null),
+      render: (r) => (r.startingBalance !== null ? formatQty(r.startingBalance) : '—'),
+    },
+    {
+      key: 'qtyDispensedToday',
+      label: 'Qty Dispensed Today',
+      sortable: true,
+      accessor: (r) => Number(r.qtyDispensedToday ?? 0),
+      render: (r) => formatQty(r.qtyDispensedToday),
+    },
+    {
+      key: 'newBalance',
+      label: 'New Balance (Qty)',
+      sortable: true,
+      accessor: (r) => (r.newBalance !== null ? Number(r.newBalance) : null),
+      render: (r) =>
+        r.newBalance !== null ? (
+          <span className={Number(r.newBalance) < 0 ? 'font-semibold text-danger' : ''}>{formatQty(r.newBalance)}</span>
+        ) : (
+          '—'
+        ),
+    },
+    {
+      key: 'signed',
+      label: 'Packs to Order',
+      sortable: true,
+      accessor: (r) => (r.signed !== null ? Number(r.signed) : null),
+      render: (r) => <span className="font-semibold">{r.signed !== null ? formatQty(r.signed, 4) : '—'}</span>,
+    },
+    {
+      key: 'ppu340b',
+      label: '340B PPU',
+      sortable: true,
+      accessor: (r) => (r.ppu340b !== null && r.ppu340b !== undefined ? Number(r.ppu340b) : null),
+      render: (r) => (r.ppu340b !== null && r.ppu340b !== undefined ? formatCurrency(r.ppu340b) : '—'),
+    },
+    {
+      key: 'reimbursementOwed',
+      label: 'Reimbursement Owed',
+      sortable: true,
+      accessor: (r) => (r.reimbursementOwed !== null && r.reimbursementOwed !== undefined ? Number(r.reimbursementOwed) : null),
+      render: (r) => (r.reimbursementOwed !== null && r.reimbursementOwed !== undefined ? formatCurrency(r.reimbursementOwed) : '—'),
+    },
+    { key: 'cin', label: 'CIN', sortable: true, render: (r) => r.cin || '—' },
+    { key: 'manufacturer', label: 'Manufacturer', sortable: true, render: (r) => r.manufacturer || '—' },
+    { key: 'expDay', label: 'Expiry Date', sortable: true, render: (r) => r.expDay || '—' },
+    {
+      key: 'status',
+      label: 'Status',
+      sortable: true,
+      accessor: (r) => STATUS_SEARCH_LABEL[r.status] ?? r.status,
+      render: (r) => (
+        <div className="flex items-center gap-2">
+          {STATUS_BADGE[r.status]}
+          {r.status === 'unmatched' && (
+            <button
+              className="rounded-md bg-teal-700 px-2 py-1 text-xs font-semibold text-white hover:bg-teal-800"
+              onClick={() => onResolveClick(r.lineItemId)}
+            >
+              Assign NDC
+            </button>
+          )}
+        </div>
+      ),
+    },
+  ];
+
   return (
     <div className="space-y-8">
       <div>
-        <div className="mb-3 flex items-center justify-between">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-500">Daily Results — every NDC in this claim</h3>
-          <button className="btn-secondary" onClick={onExport}>
-            <Download className="h-4 w-4" /> Download Standardized Replenishment Report
-          </button>
-        </div>
-        <div className="card overflow-hidden">
-          <div className="overflow-auto">
-            <table className="w-full min-w-max text-left text-sm">
-              <thead className="sticky top-0 bg-surface-alt">
-                <tr>
-                  {[
-                    'NDC', 'Product Name', 'Pack Size', 'Starting Balance (Qty)', 'Qty Dispensed Today', 'New Balance (Qty)',
-                    'Packs to Order', '340B PPU', 'Reimbursement Owed', 'CIN', 'Manufacturer', 'Expiry Date', 'Status',
-                  ].map((h) => (
-                    <th key={h} className="whitespace-nowrap px-4 py-3 font-semibold text-navy">
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {dailyResults.map((r, i) => (
-                  <tr key={r.lineItemId} className={`${i % 2 ? 'bg-surface-alt' : 'bg-white'} ${STATUS_ROW_CLASS[r.status]}`}>
-                    <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs">{r.ndc}</td>
-                    <td className="whitespace-nowrap px-4 py-2.5">{r.productName || '—'}</td>
-                    <td className="whitespace-nowrap px-4 py-2.5">{r.packSize ?? '—'}</td>
-                    <td className="whitespace-nowrap px-4 py-2.5">{r.startingBalance !== null ? formatQty(r.startingBalance) : '—'}</td>
-                    <td className="whitespace-nowrap px-4 py-2.5">{formatQty(r.qtyDispensedToday)}</td>
-                    <td className="whitespace-nowrap px-4 py-2.5">
-                      {r.newBalance !== null ? (
-                        <span className={Number(r.newBalance) < 0 ? 'font-semibold text-danger' : ''}>{formatQty(r.newBalance)}</span>
-                      ) : (
-                        '—'
-                      )}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-2.5 font-semibold">{r.signed !== null ? formatQty(r.signed, 4) : '—'}</td>
-                    <td className="whitespace-nowrap px-4 py-2.5">{r.ppu340b !== null && r.ppu340b !== undefined ? formatCurrency(r.ppu340b) : '—'}</td>
-                    <td className="whitespace-nowrap px-4 py-2.5">{r.reimbursementOwed !== null && r.reimbursementOwed !== undefined ? formatCurrency(r.reimbursementOwed) : '—'}</td>
-                    <td className="whitespace-nowrap px-4 py-2.5">{r.cin || '—'}</td>
-                    <td className="whitespace-nowrap px-4 py-2.5">{r.manufacturer || '—'}</td>
-                    <td className="whitespace-nowrap px-4 py-2.5">{r.expDay || '—'}</td>
-                    <td className="whitespace-nowrap px-4 py-2.5">
-                      <div className="flex items-center gap-2">
-                        {STATUS_BADGE[r.status]}
-                        {(r.status === 'unmatched') && (
-                          <button className="text-xs font-medium text-teal-700 hover:underline" onClick={() => onResolveClick(r.lineItemId)}>
-                            Resolve
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className="input-field w-auto py-1.5"
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+            >
+              {STATUS_FILTER_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <button className="btn-secondary" onClick={onExport}>
+              <Download className="h-4 w-4" /> Download Standardized Replenishment Report
+            </button>
           </div>
         </div>
+        {filteredResults.length === 0 ? (
+          <EmptyState icon={Package} title="No NDCs match this filter" message="Try a different status filter above." />
+        ) : (
+          <DataTable
+            columns={dailyColumns}
+            rows={filteredResults}
+            rowKey={(r) => r.lineItemId}
+            searchPlaceholder="Search NDC, product name, status..."
+            pageSize={50}
+            rowClassName={(r) => STATUS_ROW_CLASS[r.status]}
+          />
+        )}
       </div>
 
       <div>

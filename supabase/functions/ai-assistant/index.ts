@@ -78,13 +78,20 @@ Deno.serve(async (req) => {
       });
     }
 
-    const { data: profile } = await supabase
+    const { data: profile, error: profileErr } = await supabase
       .from('users')
       .select('role, active, email')
       .eq('id', userData.user.id)
       .single();
 
-    if (!profile?.active) {
+    if (profileErr || !profile) {
+      return new Response(
+        JSON.stringify({ error: `Could not load your user profile (${profileErr?.message ?? 'no row found'}). Contact an admin.` }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (!profile.active) {
       return new Response(JSON.stringify({ error: 'User account is inactive' }), {
         status: 403,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
