@@ -46,12 +46,36 @@ function findColumnIndex(headerRow, aliases) {
 }
 
 /**
+ * Reads just the sheet names + row counts from a workbook, so the caller can
+ * ask the admin which one to import BEFORE parsing it. Many real pharmacy
+ * accumulator workbooks accumulate one sheet per update through the month
+ * (e.g. "Master 06_05", "New Accumulator 6_16", "New Accumulator 6_22") —
+ * silently picking the first one is silently picking the STALEST one, which
+ * is exactly backwards. Never guess for a multi-sheet workbook.
+ */
+export function listAccumulatorXlsxSheets(arrayBuffer) {
+  try {
+    const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+    return workbook.SheetNames.map((name) => {
+      const sheet = workbook.Sheets[name];
+      const ref = sheet['!ref'];
+      const rowCount = ref ? XLSX.utils.decode_range(ref).e.r : 0;
+      return { name, rowCount };
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Parses an admin-uploaded accumulator starting-balance file. Validates that
  * all required columns (NDC, Product Name, Qty on Hand) are present before
  * accepting the file, and returns a preview the admin must confirm before
- * anything is written to the database.
+ * anything is written to the database. `sheetName` must be supplied by the
+ * caller (see listAccumulatorXlsxSheets) rather than defaulted, so a
+ * multi-sheet workbook never gets silently parsed from the wrong sheet.
  */
-export function parseAccumulatorXlsx(arrayBuffer) {
+export function parseAccumulatorXlsx(arrayBuffer, sheetName) {
   let workbook;
   try {
     workbook = XLSX.read(arrayBuffer, { type: 'array' });
@@ -59,8 +83,10 @@ export function parseAccumulatorXlsx(arrayBuffer) {
     return { error: `File could not be read as an Excel workbook: ${err.message}`, rows: [], skippedRows: [] };
   }
 
-  const sheetName = workbook.SheetNames[0];
-  if (!sheetName) return { error: 'The uploaded file contains no sheets.', rows: [], skippedRows: [] };
+  if (!sheetName) sheetName = workbook.SheetNames[0];
+  if (!sheetName || !workbook.Sheets[sheetName]) {
+    return { error: 'The uploaded file contains no sheets.', rows: [], skippedRows: [] };
+  }
 
   const sheet = workbook.Sheets[sheetName];
   const rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '' });

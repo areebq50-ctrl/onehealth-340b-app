@@ -15,7 +15,7 @@ import {
   countClaimsForPeriod,
   receiveInvoiceBulk,
 } from '../lib/accumulatorApi.js';
-import { parseAccumulatorXlsx } from '../parsers/accumulatorXlsxParser.js';
+import { parseAccumulatorXlsx, listAccumulatorXlsxSheets } from '../parsers/accumulatorXlsxParser.js';
 import { parseCardinalHealthInvoice } from '../parsers/cardinalHealthInvoiceParser.js';
 import { exportAccumulator } from '../lib/excelExport.js';
 import { formatCurrency, formatQty, packsOnHand, costOnHand340b, Decimal } from '../lib/calculations.js';
@@ -675,6 +675,9 @@ function AddNdcModal({ open, onClose, facilityId, pharmacyId, period, onAdded })
 function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported }) {
   const toast = useToast();
   const now = new Date();
+  const [fileBuffer, setFileBuffer] = useState(null);
+  const [sheets, setSheets] = useState([]);
+  const [selectedSheet, setSelectedSheet] = useState(null);
   const [parsed, setParsed] = useState(null);
   const [error, setError] = useState(null);
   const [importing, setImporting] = useState(false);
@@ -689,8 +692,29 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
     const file = e.target.files?.[0];
     if (!file) return;
     const buf = await file.arrayBuffer();
-    const result = parseAccumulatorXlsx(buf);
+    setFileBuffer(buf);
     setAcknowledgedNegatives(false);
+    setParsed(null);
+    setError(null);
+
+    const sheetList = listAccumulatorXlsxSheets(buf);
+    if (sheetList.length === 0) {
+      setError('File could not be read as an Excel workbook.');
+      return;
+    }
+    setSheets(sheetList);
+    // Many real accumulator workbooks accumulate one updated sheet per
+    // revision through the month (e.g. dated sheet names appended left to
+    // right) — the LAST sheet is far more likely to be the current one than
+    // the first, but this is only ever a starting guess: the dropdown below
+    // always shows every sheet so the admin picks explicitly, never silently.
+    const defaultSheet = sheetList[sheetList.length - 1].name;
+    setSelectedSheet(defaultSheet);
+    runParse(buf, defaultSheet);
+  }
+
+  function runParse(buf, sheetName) {
+    const result = parseAccumulatorXlsx(buf, sheetName);
     if (result.error) {
       setError(result.error);
       setParsed(null);
@@ -698,6 +722,12 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
       setError(null);
       setParsed(result);
     }
+  }
+
+  function handleSheetChange(sheetName) {
+    setSelectedSheet(sheetName);
+    setAcknowledgedNegatives(false);
+    if (fileBuffer) runParse(fileBuffer, sheetName);
   }
 
   const negativeRows = parsed?.rows.filter((r) => r.negativeQty) ?? [];
@@ -739,6 +769,9 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
         onClose();
         setParsed(null);
         setError(null);
+        setFileBuffer(null);
+        setSheets([]);
+        setSelectedSheet(null);
       }}
       title="Import Accumulator from Excel"
       wide
@@ -771,12 +804,28 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
         </div>
       </div>
       <input type="file" accept=".xlsx,.xls" onChange={handleFile} className="mb-4 block w-full text-sm" />
+      {sheets.length > 1 && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm">
+          <label className="label-text text-warning">
+            This file has {sheets.length} sheets — pick the one with your current, final numbers. Don&apos;t assume the first sheet is
+            the latest; many workbooks add a new updated sheet as the month goes on, so an earlier sheet can be missing NDCs or
+            balances that only exist in a later one.
+          </label>
+          <select className="input-field mt-1" value={selectedSheet ?? ''} onChange={(e) => handleSheetChange(e.target.value)}>
+            {sheets.map((s) => (
+              <option key={s.name} value={s.name}>
+                {s.name} ({s.rowCount} rows)
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       {error && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-danger">{error}</div>}
       {parsed && (
         <>
           <p className="mb-2 text-sm text-gray-500">
-            {parsed.rows.length} valid rows parsed{parsed.skippedRows.length > 0 ? `, ${parsed.skippedRows.length} skipped` : ''}. Review before
-            confirming — this will upsert into {MONTH_NAMES[month - 1]} {year} for this pharmacy.
+            {parsed.rows.length} valid rows parsed{parsed.skippedRows.length > 0 ? `, ${parsed.skippedRows.length} skipped` : ''} from sheet
+            &quot;{selectedSheet}&quot;. Review before confirming — this will upsert into {MONTH_NAMES[month - 1]} {year} for this pharmacy.
           </p>
           {parsed.qtyOnHandIsNegated && (
             <div className="mb-3 rounded-lg border border-teal-100 bg-teal-50 p-3 text-sm text-teal-800">
