@@ -4,16 +4,16 @@ A full-stack internal web app for processing daily 340B pharmacy claims,
 maintaining the master drug accumulator, and generating HRSA-ready reports.
 
 **Stack:** React (Vite) + Tailwind CSS · Supabase (Postgres + Storage + Auth +
-Edge Functions) · Vercel · Google Gemini API (proxied through an Edge
-Function) · SheetJS (`xlsx`) · `pdfjs-dist` · `decimal.js` for all monetary
-and quantity math.
+Edge Functions) · Vercel · Groq API (proxied through an Edge Function) ·
+SheetJS (`xlsx`) · `pdfjs-dist` · `decimal.js` for all monetary and quantity
+math.
 
 ## 1. Prerequisites
 
 - Node.js 18+
 - A Supabase project ([supabase.com](https://supabase.com))
 - A Vercel account (for hosting)
-- A Google Gemini API key, free tier ([aistudio.google.com](https://aistudio.google.com/apikey)) (for the AI Assistant)
+- A Groq API key, free tier ([console.groq.com/keys](https://console.groq.com/keys)) (for the AI Assistant)
 - The [Supabase CLI](https://supabase.com/docs/guides/cli) (for deploying Edge Functions)
 
 ## 2. Set up Supabase
@@ -47,7 +47,7 @@ supabase link --project-ref <your-project-ref>
 supabase functions deploy ai-assistant
 supabase functions deploy admin-users
 
-supabase secrets set GEMINI_API_KEY=AIza...
+supabase secrets set GROQ_API_KEY=gsk_...
 supabase secrets set SUPABASE_URL=https://<your-project-ref>.supabase.co
 supabase secrets set SUPABASE_SERVICE_ROLE_KEY=<your-service-role-key>
 ```
@@ -55,7 +55,7 @@ supabase secrets set SUPABASE_SERVICE_ROLE_KEY=<your-service-role-key>
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are used **only** inside the
 Edge Functions to query the database with elevated privileges (e.g. to
 invite users, or to gather AI-assistant context across all org data). They
-are never sent to the browser. The Gemini API key likewise never leaves
+are never sent to the browser. The Groq API key likewise never leaves
 the Edge Function.
 
 ## 3. Environment variables
@@ -76,10 +76,10 @@ keeping the anon key secret.
 |---|---|---|
 | `VITE_SUPABASE_URL` | Frontend (Vite) | Yes |
 | `VITE_SUPABASE_ANON_KEY` | Frontend (Vite) | Yes |
-| `GEMINI_API_KEY` | `ai-assistant` Edge Function only | **No** |
+| `GROQ_API_KEY` | `ai-assistant` Edge Function only | **No** |
 | `SUPABASE_URL` | Edge Functions only | **No** |
 | `SUPABASE_SERVICE_ROLE_KEY` | Edge Functions only | **No** |
-| `GEMINI_MODEL` (optional, defaults to `gemini-2.0-flash`) | `ai-assistant` Edge Function | **No** |
+| `GROQ_MODEL` (optional, defaults to `llama-3.3-70b-versatile`) | `ai-assistant` Edge Function | **No** |
 
 ## 4. Run locally
 
@@ -98,7 +98,7 @@ The app runs at `http://localhost:5173`.
 3. In the Vercel project's **Settings → Environment Variables**, add:
    - `VITE_SUPABASE_URL`
    - `VITE_SUPABASE_ANON_KEY`
-4. Deploy. Do **not** add `GEMINI_API_KEY` or the Supabase service role
+4. Deploy. Do **not** add `GROQ_API_KEY` or the Supabase service role
    key to Vercel — those belong only in Supabase Edge Function secrets.
 
 ## Architecture notes
@@ -134,7 +134,7 @@ The app runs at `http://localhost:5173`.
   the database based on keywords in the question (month/date/pharmacy/drug
   name/"unmatched"/"expiring") *and* the app's currently-selected
   Facility/Pharmacy scope (passed from the frontend), assembles a structured
-  JSON context payload, and sends it to the Gemini API. The system prompt
+  JSON context payload, and sends it to the Groq API. The system prompt
   instructs the model to only use the supplied data and never estimate
   figures, and never sum figures across pharmacies unless asked.
 

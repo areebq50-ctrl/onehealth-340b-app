@@ -1,22 +1,22 @@
 // Supabase Edge Function: ai-assistant
 //
-// Proxies chat messages from the AI Assistant page to the Google Gemini API
-// (free tier). The Gemini API key lives ONLY in this function's environment
-// (set via `supabase secrets set GEMINI_API_KEY=...`) and is never sent to
-// or readable from the browser.
+// Proxies chat messages from the AI Assistant page to the Groq API (free
+// tier, OpenAI-compatible chat completions). The Groq API key lives ONLY in
+// this function's environment (set via `supabase secrets set
+// GROQ_API_KEY=...`) and is never sent to or readable from the browser.
 //
 // Flow: verify the caller's Supabase JWT -> look up their profile with the
 // service-role client -> run a small set of heuristic Supabase queries based
 // on keywords in the user's question -> assemble a structured JSON context
-// payload -> send { system prompt, context, message, history } to Gemini ->
+// payload -> send { system prompt, context, message, history } to Groq ->
 // return the text response to the frontend.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY')!;
-const GEMINI_MODEL = Deno.env.get('GEMINI_MODEL') ?? 'gemini-2.0-flash';
+const GROQ_API_KEY = Deno.env.get('GROQ_API_KEY')!;
+const GROQ_MODEL = Deno.env.get('GROQ_MODEL') ?? 'llama-3.3-70b-versatile';
 
 const SYSTEM_PROMPT = `You are the AI assistant for the One.Health Partners 340B Operations Platform — an official internal tool used by the One.Health Partners operations team to manage 340B pharmacy claims processing, drug inventory, and reimbursement calculations. You are professional, precise, and concise. You only answer questions related to 340B operations, claims data, drug inventory, reimbursement, and pharmacy management. You will be provided with structured data from the One.Health Partners database as context for each question. You must only use the data provided in that context to answer — never estimate, guess, or hallucinate financial figures, quantities, or drug information. If the data needed to answer a question is not present in the provided context, say so clearly and suggest what the user should look for in the app. Always present numbers clearly and label units (qty, packs, dollars). When presenting financial totals, always display them as dollar amounts rounded to 2 decimal places.`;
 
@@ -242,47 +242,41 @@ Deno.serve(async (req) => {
       note: 'All arrays are capped for payload size; if a total looks incomplete, tell the user to check the Dashboard/Reports page for the full dataset. Every accumulator and claim row belongs to exactly one pharmacy — never sum figures across different pharmacyName values unless the user asked for an all-pharmacy total.',
     };
 
-    // Gemini has no 'assistant' role — prior assistant turns must be sent
-    // back as role 'model'. User turns stay 'user'.
-    const geminiContents = [
-      ...(Array.isArray(history) ? history.slice(-10) : []).map((m: { role: string; content: string }) => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }],
-      })),
+    // Groq's chat completions API is OpenAI-compatible: role is
+    // 'system' | 'user' | 'assistant', matching the frontend's history
+    // shape directly — no role remapping needed (unlike Gemini's 'model').
+    const groqMessages = [
+      { role: 'system', content: SYSTEM_PROMPT },
+      ...(Array.isArray(history) ? history.slice(-10) : []),
       {
         role: 'user',
-        parts: [{ text: `Database context (JSON):\n${JSON.stringify(contextPayload)}\n\nQuestion: ${message}` }],
+        content: `Database context (JSON):\n${JSON.stringify(contextPayload)}\n\nQuestion: ${message}`,
       },
     ];
 
-    const geminiResp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          contents: geminiContents,
-          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-          generationConfig: { maxOutputTokens: 1536 },
-        }),
-      }
-    );
+    const groqResp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${GROQ_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        max_tokens: 1536,
+        messages: groqMessages,
+      }),
+    });
 
-    if (!geminiResp.ok) {
-      const errText = await geminiResp.text();
-      return new Response(JSON.stringify({ error: `Gemini API error: ${errText}` }), {
+    if (!groqResp.ok) {
+      const errText = await groqResp.text();
+      return new Response(JSON.stringify({ error: `Groq API error: ${errText}` }), {
         status: 502,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
-    const geminiJson = await geminiResp.json();
-    const candidate = geminiJson?.candidates?.[0];
-    const replyText =
-      candidate?.content?.parts?.map((p: { text?: string }) => p.text ?? '').join('') ||
-      (candidate?.finishReason === 'SAFETY'
-        ? 'The response was blocked by Gemini\'s safety filters. Try rephrasing the question.'
-        : 'No response generated.');
+    const groqJson = await groqResp.json();
+    const replyText = groqJson?.choices?.[0]?.message?.content ?? 'No response generated.';
 
     return new Response(JSON.stringify({ reply: replyText }), {
       status: 200,
