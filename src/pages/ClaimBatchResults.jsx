@@ -295,7 +295,10 @@ export default function ClaimBatchResults() {
       )}
 
       {tab === 'All Claims' && (
-        <AllClaimsTab rows={rawLines} />
+        <AllClaimsTab
+          rows={rawLines}
+          onResolveClick={(ndc) => setResolveTarget(lineItems.find((li) => li.ndc === ndc))}
+        />
       )}
 
       {tab === 'Replenishment by NDC' && (
@@ -342,7 +345,7 @@ export default function ClaimBatchResults() {
   );
 }
 
-function AllClaimsTab({ rows }) {
+function AllClaimsTab({ rows, onResolveClick }) {
   if (rows.length === 0) {
     return <EmptyState icon={ClipboardList} title="No claim line detail available" message="This batch has no per-RX ledger rows recorded." />;
   }
@@ -369,7 +372,21 @@ function AllClaimsTab({ rows }) {
       key: 'matched',
       label: 'Match Status',
       sortable: true,
-      render: (r) => (r.matched ? <span className="badge bg-green-50 text-success">Matched</span> : <span className="badge bg-amber-50 text-warning">Unmatched</span>),
+      render: (r) =>
+        r.matched ? (
+          <span className="badge bg-green-50 text-success">Matched</span>
+        ) : (
+          <button
+            className="badge bg-amber-50 text-warning hover:underline"
+            title="Look up this NDC and match it to the accumulator"
+            onClick={(e) => {
+              e.stopPropagation();
+              onResolveClick?.(r.ndc);
+            }}
+          >
+            Unmatched — Resolve
+          </button>
+        ),
     },
   ];
   return (

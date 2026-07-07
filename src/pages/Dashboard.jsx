@@ -14,21 +14,22 @@ import EmptyState from '../components/common/EmptyState.jsx';
 
 const now = new Date();
 
-function SummaryCard({ icon: Icon, label, value, tone = 'teal' }) {
+function SummaryCard({ icon: Icon, label, value, tone = 'teal', onClick }) {
   const tones = {
     teal: 'bg-teal-50 text-teal-700',
     coral: 'bg-coral-50 text-coral-700',
     amber: 'bg-amber-50 text-warning',
     navy: 'bg-gray-100 text-navy',
   };
+  const Tag = onClick ? 'button' : 'div';
   return (
-    <div className="card p-5">
+    <Tag className={`card p-5 text-left ${onClick ? 'cursor-pointer transition-shadow hover:shadow-md' : ''}`} onClick={onClick}>
       <div className={`mb-3 flex h-9 w-9 items-center justify-center rounded-lg ${tones[tone]}`}>
         <Icon className="h-5 w-5" />
       </div>
       <p className="text-xs font-medium uppercase tracking-wide text-gray-500">{label}</p>
       <p className="mt-1 text-2xl font-bold text-navy">{value}</p>
-    </div>
+    </Tag>
   );
 }
 
@@ -122,7 +123,13 @@ export default function Dashboard() {
             tone="teal"
           />
           <SummaryCard icon={FileText} label="Claims Processed" value={summary?.totalClaims ?? 0} tone="navy" />
-          <SummaryCard icon={AlertTriangle} label="Unmatched NDCs" value={summary?.unmatchedCount ?? 0} tone="coral" />
+          <SummaryCard
+            icon={AlertTriangle}
+            label="Unmatched NDCs"
+            value={summary?.unmatchedCount ?? 0}
+            tone="coral"
+            onClick={summary?.unmatchedCount > 0 ? () => navigate('/claims') : undefined}
+          />
           <SummaryCard icon={Clock} label="Expiring Within 60 Days" value={summary?.expiringCount ?? 0} tone="amber" />
         </div>
       )}

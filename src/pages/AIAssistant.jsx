@@ -60,7 +60,21 @@ export default function AIAssistant() {
         },
       });
 
-      if (error) throw error;
+      if (error) {
+        // supabase-js only gives a generic "non-2xx status code" message for
+        // FunctionsHttpError — the real reason (bad key, blocked response,
+        // etc.) is in the function's JSON response body on error.context.
+        let detail = error.message;
+        if (error.context && typeof error.context.json === 'function') {
+          try {
+            const body = await error.context.json();
+            if (body?.error) detail = body.error;
+          } catch {
+            // response body wasn't JSON — fall back to the generic message
+          }
+        }
+        throw new Error(detail);
+      }
       if (data?.error) throw new Error(data.error);
 
       setMessages((prev) => [...prev, { role: 'assistant', content: data.reply }]);
