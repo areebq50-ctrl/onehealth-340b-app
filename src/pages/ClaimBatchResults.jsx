@@ -13,6 +13,7 @@ import EmptyState from '../components/common/EmptyState.jsx';
 import DataTable from '../components/common/DataTable.jsx';
 import ExcelPreviewModal from '../components/files/ExcelPreviewModal.jsx';
 import UnmatchedNdcModal from '../components/claims/UnmatchedNdcModal.jsx';
+import BulkAssignNdcModal from '../components/claims/BulkAssignNdcModal.jsx';
 
 const TABS = ['Overview', 'All Claims', 'Replenishment by NDC', 'Accumulator Changes & Audit'];
 
@@ -42,8 +43,11 @@ export default function ClaimBatchResults() {
   const [replenStatusFilter, setReplenStatusFilter] = useState(() => (location.state?.filter === 'unmatched' ? 'unmatched' : 'all'));
   const [previewOpen, setPreviewOpen] = useState(false);
   const [resolveTarget, setResolveTarget] = useState(null);
+  const [bulkAssignOpen, setBulkAssignOpen] = useState(false);
   const [orderingId, setOrderingId] = useState(null);
   const [deleting, setDeleting] = useState(false);
+
+  const unmatchedLineItems = lineItems.filter((li) => !li.matched && !li.skip_reason);
 
   function goToUnmatched() {
     setReplenStatusFilter('unmatched');
@@ -298,9 +302,14 @@ export default function ClaimBatchResults() {
                 {claim.unmatched_count} NDC{claim.unmatched_count > 1 ? 's' : ''} still need review — every unmatched NDC must be
                 added, matched, or explicitly skipped with a reason.
               </span>
-              <button className="btn-secondary" onClick={goToUnmatched}>
-                <Wrench className="h-4 w-4" /> Review Now
-              </button>
+              <div className="flex gap-2">
+                <button className="btn-secondary" onClick={() => setBulkAssignOpen(true)}>
+                  Assign All
+                </button>
+                <button className="btn-secondary" onClick={goToUnmatched}>
+                  <Wrench className="h-4 w-4" /> Review Now
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -320,6 +329,8 @@ export default function ClaimBatchResults() {
           orderingId={orderingId}
           setOrderingId={setOrderingId}
           onResolveClick={(lineItemId) => setResolveTarget(lineItems.find((li) => li.id === lineItemId))}
+          onAssignAllClick={() => setBulkAssignOpen(true)}
+          unmatchedCount={unmatchedLineItems.length}
           onOrderConfirmed={load}
           claim={claim}
           statusFilter={replenStatusFilter}
@@ -353,6 +364,13 @@ export default function ClaimBatchResults() {
         open={Boolean(resolveTarget)}
         onClose={() => setResolveTarget(null)}
         lineItem={resolveTarget}
+        onResolved={load}
+      />
+
+      <BulkAssignNdcModal
+        open={bulkAssignOpen}
+        onClose={() => setBulkAssignOpen(false)}
+        lineItems={unmatchedLineItems}
         onResolved={load}
       />
     </div>
@@ -521,6 +539,8 @@ function ReplenishmentTab({
   orderingId,
   setOrderingId,
   onResolveClick,
+  onAssignAllClick,
+  unmatchedCount,
   onOrderConfirmed,
   claim,
   onExport,
@@ -625,6 +645,11 @@ function ReplenishmentTab({
                 </option>
               ))}
             </select>
+            {unmatchedCount > 0 && (
+              <button className="btn-secondary" onClick={onAssignAllClick}>
+                Assign All ({unmatchedCount})
+              </button>
+            )}
             <button className="btn-secondary" onClick={onExport}>
               <Download className="h-4 w-4" /> Download Standardized Replenishment Report
             </button>
