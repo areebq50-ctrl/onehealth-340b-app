@@ -129,7 +129,7 @@ Deno.serve(async (req) => {
       .gte('claim_date', `${year}-${String(month).padStart(2, '0')}-01`)
       .lt('claim_date', month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, '0')}-01`)
       .order('claim_date', { ascending: true })
-      .limit(200);
+      .limit(100);
     if (mentionedPharmacy) claimsQuery = claimsQuery.eq('pharmacy_id', mentionedPharmacy.id);
     if (scopedFacilityId) claimsQuery = claimsQuery.eq('facility_id', scopedFacilityId);
     if (explicitDate) claimsQuery = claimsQuery.eq('claim_date', explicitDate);
@@ -178,7 +178,7 @@ Deno.serve(async (req) => {
           .select('ndc, product_name, qty_dispensed, claim_id')
           .in('claim_id', recentIds)
           .eq('matched', false)
-          .limit(300);
+          .limit(100);
         unmatched = data ?? [];
       }
     }
@@ -192,7 +192,7 @@ Deno.serve(async (req) => {
         .select('ndc, product_name, exp_day, qty_on_hand, facility_id, pharmacy_id, month, year, pharmacies(name)')
         .lte('exp_day', sixtyDaysOut)
         .order('exp_day', { ascending: true })
-        .limit(100);
+        .limit(50);
       if (mentionedPharmacy) expiringQuery = expiringQuery.eq('pharmacy_id', mentionedPharmacy.id);
       if (scopedFacilityId) expiringQuery = expiringQuery.eq('facility_id', scopedFacilityId);
       const { data } = await expiringQuery;
@@ -234,7 +234,7 @@ Deno.serve(async (req) => {
         totalReimbursement: Number(totalReimbursement.toFixed(2)),
       },
       claims: (claims ?? []).map((c: any) => ({ ...c, pharmacyName: c.pharmacies?.name ?? null })),
-      claimLineItemsSample: lineItems.slice(0, 500),
+      claimLineItemsSample: lineItems.slice(0, 80),
       topDispensingVolume: topVolume,
       drugAccumulatorMatches: drugAccumulator,
       unmatchedNdcsLast30Days: unmatched,
@@ -262,7 +262,7 @@ Deno.serve(async (req) => {
       },
       body: JSON.stringify({
         model: GROQ_MODEL,
-        max_tokens: 1536,
+        max_tokens: 1024,
         messages: groqMessages,
       }),
     });
