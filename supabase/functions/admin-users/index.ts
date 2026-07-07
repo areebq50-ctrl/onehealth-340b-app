@@ -20,7 +20,7 @@ const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 // carries `type=invite` in the hash, which the frontend uses to force a
 // "set your password" screen instead of dropping the new user straight
 // into the app with no password set.
-const SITE_URL = Deno.env.get('SITE_URL') ?? 'https://onehealth340bapp.vercel.app';
+const SITE_URL = Deno.env.get('SITE_URL') ?? 'https://onehealth-340b-app.vercel.app';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
