@@ -123,7 +123,10 @@ export function parseAccumulatorXlsx(arrayBuffer) {
       // a DERIVED "new balance" after dispensing exceeds supply, never as an
       // imported starting figure. Flagged (not excluded) so the import
       // preview can surface it instead of silently importing a sign error.
-      negativeQty: qtyOnHand.isNegative(),
+      // Decimal.js preserves a sign bit on negated zero ("-0"), so
+      // isNegative() alone would misflag every zero-balance row that went
+      // through the New Balance negation path above — exclude exact zero.
+      negativeQty: qtyOnHand.isNegative() && !qtyOnHand.isZero(),
       expDay: colIndex.expDay >= 0 ? normalizeExcelDateCell(row[colIndex.expDay]) : null,
       price340b: colIndex.price340b >= 0 ? toDecimal(row[colIndex.price340b])?.toString() ?? null : null,
       ppu340b: colIndex.ppu340b >= 0 ? toDecimal(row[colIndex.ppu340b])?.toString() ?? null : null,
