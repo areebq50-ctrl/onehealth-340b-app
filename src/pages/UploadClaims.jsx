@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { UploadCloud, ChevronDown, ChevronRight, AlertTriangle, CheckCircle2, Loader2, FileWarning, CalendarDays } from 'lucide-react';
+import { UploadCloud, ChevronDown, ChevronRight, AlertTriangle, CheckCircle2, Loader2, FileWarning, CalendarDays, ArrowRight } from 'lucide-react';
 import { useFacility } from '../context/FacilityContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
@@ -74,6 +74,31 @@ function groupRowsByDate(rows, fallbackDate) {
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
+/** "2026-07-01" -> "Jul 1, 2026" for a single date; joins a range for several. */
+function formatDateLabel(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+}
+
+/** A human label for a whole multi-date batch, e.g. "Jul 1–2, 2026" or "Jul 1 & Jul 5, 2026". */
+function formatBatchLabel(dates) {
+  if (dates.length === 1) return formatDateLabel(dates[0]);
+  const [y1, m1, d1] = dates[0].split('-').map(Number);
+  const [y2, m2, d2] = dates[dates.length - 1].split('-').map(Number);
+  const monthName = (m, y) => new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' });
+  if (y1 === y2 && m1 === m2) {
+    // Same month — "Jul 1–5, 2026" if every date in between is actually present, else list them.
+    const allConsecutive = dates.every((ds, i) => {
+      if (i === 0) return true;
+      const [, , prevD] = dates[i - 1].split('-').map(Number);
+      const [, , curD] = ds.split('-').map(Number);
+      return curD === prevD + 1;
+    });
+    if (allConsecutive) return `${monthName(m1, y1)} ${d1}–${d2}, ${y1}`;
+  }
+  return dates.map((ds) => formatDateLabel(ds)).join(' & ');
+}
+
 export default function UploadClaims() {
   const { facilities, pharmaciesForSelectedFacility, selectedFacilityId, selectedPharmacyId } = useFacility();
   const { isAdmin } = useAuth();
@@ -93,6 +118,16 @@ export default function UploadClaims() {
   const [manualRows, setManualRows] = useState([{ ndcRaw: '', drugName: '', qtyRaw: '' }]);
   const [validRows, setValidRows] = useState(null);
 
+  // Per-date state, keyed by date string, populated by each DateBatchCard as
+  // it finishes its own cross-reference/duplicate check. This is what
+  // powers the single combined summary + confirm button at the top instead
+  // of one per card.
+  const [cardSummaries, setCardSummaries] = useState({});
+  const saveFnsRef = useRef({});
+  const [savedByDate, setSavedByDate] = useState({});
+  const [confirmAllOpen, setConfirmAllOpen] = useState(false);
+  const [savingAll, setSavingAll] = useState(false);
+
   const selectedFacility = facilities.find((f) => f.id === selectedFacilityId);
   const selectedPharmacy = pharmaciesForSelectedFacility.find((p) => p.id === selectedPharmacyId);
   const pharmacySelected = selectedFacilityId !== 'all' && selectedPharmacyId !== 'all';
@@ -106,6 +141,9 @@ export default function UploadClaims() {
     setNeedsManualEntry(false);
     setManualRows([{ ndcRaw: '', drugName: '', qtyRaw: '' }]);
     setValidRows(null);
+    setCardSummaries({});
+    saveFnsRef.current = {};
+    setSavedByDate({});
   }
 
   async function handleFileChange(e) {
@@ -189,6 +227,66 @@ export default function UploadClaims() {
   const dateGroups = useMemo(() => (validRows ? groupRowsByDate(validRows, claimDate) : []), [validRows, claimDate]);
   const isMultiDate = dateGroups.length > 1;
   const detectedSingleDateOverride = dateGroups.length === 1 && dateGroups[0].date !== claimDate;
+  const batchLabel = useMemo(() => (dateGroups.length > 0 ? formatBatchLabel(dateGroups.map((g) => g.date)) : ''), [dateGroups]);
+
+  function handleCardSummary(dateStr, summary) {
+    setCardSummaries((prev) => ({ ...prev, [dateStr]: summary }));
+  }
+
+  function registerSaveFn(dateStr, fn) {
+    saveFnsRef.current[dateStr] = fn;
+  }
+
+  const allSummaries = dateGroups.map((g) => cardSummaries[g.date]).filter(Boolean);
+  const allCardsReported = allSummaries.length === dateGroups.length && dateGroups.length > 0;
+  const anyStillChecking = allSummaries.some((s) => s.checking);
+  const anyPeriodMissing = allSummaries.some((s) => s.periodMissing);
+  const anyBlockedOnOverwrite = allSummaries.some((s) => s.existingClaim && !(isAdmin && s.overwriteConfirmed));
+  const anyEmpty = allSummaries.some((s) => s.rowCount === 0);
+  const remainingCount = dateGroups.filter((g) => !savedByDate[g.date]).length;
+
+  const combinedTotals = useMemo(() => {
+    return allSummaries.reduce(
+      (acc, s) => ({
+        matchedCount: acc.matchedCount + s.matchedCount,
+        unmatchedCount: acc.unmatchedCount + s.unmatchedCount,
+        totalQty: acc.totalQty.plus(s.totalQty ?? 0),
+        totalReimb: acc.totalReimb.plus(s.totalReimb ?? 0),
+        rowCount: acc.rowCount + s.rowCount,
+      }),
+      { matchedCount: 0, unmatchedCount: 0, totalQty: new Decimal(0), totalReimb: new Decimal(0), rowCount: 0 }
+    );
+  }, [allSummaries]);
+
+  const allSaved = dateGroups.length > 0 && dateGroups.every((g) => savedByDate[g.date]);
+  const canConfirmAll =
+    allCardsReported && !anyStillChecking && !anyPeriodMissing && !anyBlockedOnOverwrite && !anyEmpty && !savingAll && remainingCount > 0;
+
+  async function handleConfirmAll() {
+    setConfirmAllOpen(false);
+    setSavingAll(true);
+    const results = { ...savedByDate };
+    let failedDate = null;
+    for (const g of dateGroups) {
+      if (results[g.date]) continue; // already saved (e.g. retry after a partial failure)
+      const fn = saveFnsRef.current[g.date];
+      if (!fn) continue;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const claimId = await fn();
+        results[g.date] = claimId;
+        setSavedByDate({ ...results });
+      } catch (err) {
+        toast.error(`Save failed for ${formatDateLabel(g.date)} — no changes were made for that date: ${err.message}`);
+        failedDate = g.date;
+        break;
+      }
+    }
+    setSavingAll(false);
+    if (!failedDate) {
+      toast.success(`${batchLabel} processed successfully for ${selectedFacility?.name} → ${selectedPharmacy?.name}.`);
+    }
+  }
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
@@ -329,9 +427,8 @@ export default function UploadClaims() {
         <div className="flex items-start gap-2 rounded-lg border border-teal-200 bg-teal-50 p-4 text-sm text-teal-800">
           <CalendarDays className="mt-0.5 h-4 w-4 flex-shrink-0" />
           <span>
-            This file&apos;s own &quot;Date Filled&quot; column has <strong>{dateGroups.length} distinct dates</strong> — it will be
-            split into {dateGroups.length} separate claim batches, one per day below. Review and confirm each one independently;
-            you can save some now and come back for the rest later.
+            This file&apos;s own &quot;Date Filled&quot; column has <strong>{dateGroups.length} distinct dates</strong> — shown below
+            as <strong>{batchLabel}</strong>. Review the breakdown for each day, then confirm once below to save all of them together.
           </span>
         </div>
       )}
@@ -344,6 +441,76 @@ export default function UploadClaims() {
             selected above — using the file&apos;s date since it&apos;s the more reliable source.
           </span>
         </div>
+      )}
+
+      {dateGroups.length > 0 && !allSaved && (
+        <section className="card sticky top-4 z-10 p-6 shadow-md">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-500">
+                {isMultiDate ? `2. Confirm — ${batchLabel} (${dateGroups.length} days)` : `2. Confirm — ${batchLabel}`}
+              </h2>
+              {!allCardsReported || anyStillChecking ? (
+                <p className="mt-1 flex items-center gap-2 text-sm text-gray-500">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Checking accumulator and duplicates...
+                </p>
+              ) : (
+                <p className="mt-1 text-sm text-gray-500">
+                  <strong>{combinedTotals.matchedCount}</strong> NDCs matched · Total Qty <strong>{formatQty(combinedTotals.totalQty)}</strong> ·
+                  Total Reimbursement <strong>{formatCurrency(combinedTotals.totalReimb)}</strong>
+                  {combinedTotals.unmatchedCount > 0 && (
+                    <span className="text-warning"> · {combinedTotals.unmatchedCount} unmatched</span>
+                  )}
+                </p>
+              )}
+            </div>
+            <button className="btn-primary" disabled={!canConfirmAll} onClick={() => setConfirmAllOpen(true)}>
+              {savingAll ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+              Confirm &amp; Save {isMultiDate ? `All ${dateGroups.length} Days` : ''}
+            </button>
+          </div>
+          {anyPeriodMissing && (
+            <p className="mt-3 flex items-center gap-2 text-sm text-warning">
+              <AlertTriangle className="h-4 w-4" /> At least one day is blocked — no accumulator exists yet for that period. See the
+              detail below.
+            </p>
+          )}
+          {anyBlockedOnOverwrite && (
+            <p className="mt-3 flex items-center gap-2 text-sm text-warning">
+              <AlertTriangle className="h-4 w-4" /> At least one day already has an uploaded claim — check the overwrite box in that
+              day&apos;s section below to proceed.
+            </p>
+          )}
+        </section>
+      )}
+
+      {allSaved && (
+        <section className="card border-2 border-teal-200 p-6">
+          <div className="flex items-center gap-2 text-success">
+            <CheckCircle2 className="h-5 w-5" />
+            <h2 className="text-base font-semibold text-navy">{batchLabel} processed successfully</h2>
+          </div>
+          <p className="mt-2 text-sm text-gray-500">
+            <strong>{combinedTotals.matchedCount}</strong> NDCs matched across {dateGroups.length} day{dateGroups.length > 1 ? 's' : ''} ·
+            Total Qty <strong>{formatQty(combinedTotals.totalQty)}</strong> · Total Reimbursement{' '}
+            <strong>{formatCurrency(combinedTotals.totalReimb)}</strong>
+            {combinedTotals.unmatchedCount > 0 && <span className="text-warning"> · {combinedTotals.unmatchedCount} unmatched</span>}
+          </p>
+          <div className="mt-4 divide-y divide-gray-100 rounded-lg border border-gray-100">
+            {dateGroups.map((g) => (
+              <button
+                key={g.date}
+                className="flex w-full items-center justify-between px-4 py-3 text-left text-sm hover:bg-surface-alt"
+                onClick={() => navigate(`/claims/${savedByDate[g.date]}`)}
+              >
+                <span className="font-medium text-navy">{formatDateLabel(g.date)}</span>
+                <span className="flex items-center gap-1 text-teal-700">
+                  View Details <ArrowRight className="h-3.5 w-3.5" />
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
       )}
 
       {dateGroups.map((g) => (
@@ -359,22 +526,58 @@ export default function UploadClaims() {
           isAdmin={isAdmin}
           file={file}
           fileHash={fileHash}
-          onSaved={(claimId) => navigate(`/claims/${claimId}`)}
+          saved={Boolean(savedByDate[g.date])}
+          onSummaryChange={handleCardSummary}
+          onRegisterSave={registerSaveFn}
         />
       ))}
+
+      <Modal open={confirmAllOpen} onClose={() => setConfirmAllOpen(false)} title={`Confirm Claim Processing — ${batchLabel}`}>
+        <div className="space-y-3 text-sm">
+          <p className="text-gray-500">You are about to process:</p>
+          <dl className="divide-y divide-gray-100 rounded-lg border border-gray-100">
+            {[
+              ['Facility', selectedFacility?.name],
+              ['Pharmacy', selectedPharmacy?.name],
+              ['Date(s)', batchLabel],
+              ['Original Filename', file?.name ?? '—'],
+              ['Total Rows', combinedTotals.rowCount],
+              ['Matched NDCs', combinedTotals.matchedCount],
+              ['Unmatched NDCs', combinedTotals.unmatchedCount],
+              ['Estimated Reimbursement', formatCurrency(combinedTotals.totalReimb)],
+            ].map(([label, value]) => (
+              <div key={label} className="flex justify-between px-3 py-2">
+                <dt className="text-gray-500">{label}</dt>
+                <dd className="font-medium text-navy">{value}</dd>
+              </div>
+            ))}
+          </dl>
+          <p className="text-xs text-gray-400">
+            Confirming will change the accumulator for {selectedPharmacy?.name} only, one day at a time in the order shown above. This
+            cannot be undone without admin intervention.
+          </p>
+          <div className="flex justify-end gap-2 pt-2">
+            <button className="btn-secondary" onClick={() => setConfirmAllOpen(false)}>
+              Cancel
+            </button>
+            <button className="btn-primary" onClick={handleConfirmAll}>
+              <CheckCircle2 className="h-4 w-4" /> Confirm &amp; Process
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
 
 /**
- * One claim batch's worth of cross-reference, duplicate-check, preview, and
- * confirm-and-save flow, scoped to a single date and its rows. Rendered
- * once for the common single-date case, or once per detected date when a
- * file's own "Date Filled" column spans multiple days — each instance is
- * fully independent (its own period/duplicate check, its own confirm),
- * so partially confirming a multi-date file is safe.
+ * One date's worth of cross-reference, duplicate-check, and preview. No
+ * longer owns its own confirm button/modal — it reports its computed
+ * summary up via onSummaryChange and registers its save function via
+ * onRegisterSave, so a single combined bar at the top of the page can
+ * confirm every date in one click instead of one confirm per card.
  */
-function DateBatchCard({ dateStr, rows, skippedRowsCount, facilityId, pharmacyId, facility, pharmacy, isAdmin, file, fileHash, onSaved }) {
+function DateBatchCard({ dateStr, rows, skippedRowsCount, facilityId, pharmacyId, facility, pharmacy, isAdmin, file, fileHash, saved, onSummaryChange, onRegisterSave }) {
   const toast = useToast();
 
   const [crossReferencing, setCrossReferencing] = useState(true);
@@ -385,10 +588,6 @@ function DateBatchCard({ dateStr, rows, skippedRowsCount, facilityId, pharmacyId
   const [existingClaim, setExistingClaim] = useState(null);
   const [overwriteConfirmed, setOverwriteConfirmed] = useState(false);
   const [checkingDuplicate, setCheckingDuplicate] = useState(true);
-
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
 
   const month = Number(dateStr.slice(5, 7));
   const year = Number(dateStr.slice(0, 4));
@@ -489,64 +688,75 @@ function DateBatchCard({ dateStr, rows, skippedRowsCount, facilityId, pharmacyId
 
   const isExactDuplicateFile = existingClaim && fileHash && existingClaim.file_hash && existingClaim.file_hash === fileHash;
 
-  const canConfirm = calcRows.length > 0 && !periodMissing && (!existingClaim || (isAdmin && overwriteConfirmed)) && !saving && !saved;
+  // Report this card's readiness up to the parent every time anything the
+  // combined top bar depends on changes.
+  useEffect(() => {
+    onSummaryChange(dateStr, {
+      checking: crossReferencing || checkingDuplicate,
+      periodMissing,
+      existingClaim,
+      overwriteConfirmed,
+      rowCount: calcRows.length,
+      matchedCount: grandTotals.ndcCount,
+      unmatchedCount: grandTotals.unmatchedCount,
+      totalQty: grandTotals.totalQty,
+      totalReimb: grandTotals.totalReimb,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [crossReferencing, checkingDuplicate, periodMissing, existingClaim, overwriteConfirmed, calcRows.length, grandTotals]);
 
-  async function handleConfirmSave() {
-    setConfirmOpen(false);
-    setSaving(true);
+  async function doSave() {
+    let filePath = null;
     try {
-      let filePath = null;
-      try {
-        filePath = await uploadClaimFile(file, {
-          facilityShortCode: facility?.short_code ?? 'facility',
-          pharmacyName: pharmacy?.name ?? 'pharmacy',
-          claimDate: dateStr,
-        });
-      } catch (storageErr) {
-        // Non-fatal: proceed without a stored file rather than blocking the whole claim.
-        // eslint-disable-next-line no-console
-        console.error('File storage upload failed:', storageErr.message);
-      }
-
-      const lineItems = calcRows.map((r) => ({
-        ndc: r.reassignedTo ?? r.ndc,
-        qty_dispensed: r.totalQty.toString(),
-        matched: r.matched,
-        product_name_raw: r.drugName,
-      }));
-
-      const rawLines = rows.map(ledgerToRpcRow);
-
-      const claimId = await processClaim({
-        pharmacyId,
-        facilityId,
+      filePath = await uploadClaimFile(file, {
+        facilityShortCode: facility?.short_code ?? 'facility',
+        pharmacyName: pharmacy?.name ?? 'pharmacy',
         claimDate: dateStr,
-        filePath,
-        lineItems,
-        rawLines,
-        overwrite: Boolean(existingClaim),
-        originalFilename: file?.name ?? null,
-        fileHash,
-        totalRows: rows.length + skippedRowsCount,
-        validRows: rows.length,
-        invalidRows: skippedRowsCount,
       });
-
-      toast.success(`Claims for ${facility?.name} → ${pharmacy?.name} dated ${dateStr} were processed successfully.`);
-      setSaved(true);
-      onSaved(claimId);
-    } catch (err) {
-      toast.error(`Save failed for ${dateStr} — no changes were made: ${err.message}`);
-    } finally {
-      setSaving(false);
+    } catch (storageErr) {
+      // Non-fatal: proceed without a stored file rather than blocking the whole claim.
+      // eslint-disable-next-line no-console
+      console.error('File storage upload failed:', storageErr.message);
     }
+
+    const lineItems = calcRows.map((r) => ({
+      ndc: r.reassignedTo ?? r.ndc,
+      qty_dispensed: r.totalQty.toString(),
+      matched: r.matched,
+      product_name_raw: r.drugName,
+    }));
+
+    const rawLines = rows.map(ledgerToRpcRow);
+
+    return processClaim({
+      pharmacyId,
+      facilityId,
+      claimDate: dateStr,
+      filePath,
+      lineItems,
+      rawLines,
+      overwrite: Boolean(existingClaim),
+      originalFilename: file?.name ?? null,
+      fileHash,
+      totalRows: rows.length + skippedRowsCount,
+      validRows: rows.length,
+      invalidRows: skippedRowsCount,
+    });
   }
+
+  // Registered once per mount (and again if the save inputs it closes over
+  // change) so the parent's combined "Confirm All" button always calls the
+  // latest version of this function.
+  useEffect(() => {
+    onRegisterSave(dateStr, doSave);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calcRows, rows, existingClaim, fileHash, file]);
 
   return (
     <section className="card overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 p-6">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-500">
-          Claim Batch — {dateStr} <span className="font-normal text-gray-400">({rows.length} rows)</span>
+          {formatDateLabel(dateStr)} <span className="font-normal text-gray-400">({rows.length} rows)</span>
         </h2>
         {saved && <span className="badge bg-green-50 text-success">Saved</span>}
       </div>
@@ -687,51 +897,7 @@ function DateBatchCard({ dateStr, rows, skippedRowsCount, facilityId, pharmacyId
             </div>
           </div>
         )}
-
-        {calcRows.length > 0 && (
-          <div className="flex items-center justify-end gap-3">
-            <button className="btn-primary" disabled={!canConfirm} onClick={() => setConfirmOpen(true)}>
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-              {saved ? 'Saved' : 'Confirm & Save'}
-            </button>
-          </div>
-        )}
       </div>
-
-      <Modal open={confirmOpen} onClose={() => setConfirmOpen(false)} title={`Confirm Claim Processing — ${dateStr}`}>
-        <div className="space-y-3 text-sm">
-          <p className="text-gray-500">You are about to process:</p>
-          <dl className="divide-y divide-gray-100 rounded-lg border border-gray-100">
-            {[
-              ['Facility', facility?.name],
-              ['Pharmacy', pharmacy?.name],
-              ['Claim Date', dateStr],
-              ['Original Filename', file?.name ?? '—'],
-              ['Rows in this batch', rows.length],
-              ['Matched NDCs', grandTotals.ndcCount],
-              ['Unmatched NDCs', grandTotals.unmatchedCount],
-              ['Estimated Reimbursement', formatCurrency(grandTotals.totalReimb)],
-            ].map(([label, value]) => (
-              <div key={label} className="flex justify-between px-3 py-2">
-                <dt className="text-gray-500">{label}</dt>
-                <dd className="font-medium text-navy">{value}</dd>
-              </div>
-            ))}
-          </dl>
-          <p className="text-xs text-gray-400">
-            Confirming will change the accumulator for {pharmacy?.name} only, for {dateStr}. This cannot be undone without admin
-            intervention.
-          </p>
-          <div className="flex justify-end gap-2 pt-2">
-            <button className="btn-secondary" onClick={() => setConfirmOpen(false)}>
-              Cancel
-            </button>
-            <button className="btn-primary" onClick={handleConfirmSave}>
-              <CheckCircle2 className="h-4 w-4" /> Confirm &amp; Process
-            </button>
-          </div>
-        </div>
-      </Modal>
     </section>
   );
 }
