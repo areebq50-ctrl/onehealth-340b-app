@@ -15,7 +15,7 @@ import {
   countClaimsForPeriod,
   receiveInvoiceBulk,
 } from '../lib/accumulatorApi.js';
-import { parseAccumulatorXlsx, listAccumulatorXlsxSheets } from '../parsers/accumulatorXlsxParser.js';
+import { readAccumulatorWorkbook, parseAccumulatorSheet } from '../parsers/accumulatorXlsxParser.js';
 import { parseCardinalHealthInvoice } from '../parsers/cardinalHealthInvoiceParser.js';
 import { exportAccumulator } from '../lib/excelExport.js';
 import { formatCurrency, formatQty, packsOnHand, costOnHand340b, Decimal } from '../lib/calculations.js';
@@ -675,7 +675,7 @@ function AddNdcModal({ open, onClose, facilityId, pharmacyId, period, onAdded })
 function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported }) {
   const toast = useToast();
   const now = new Date();
-  const [fileBuffer, setFileBuffer] = useState(null);
+  const [workbook, setWorkbook] = useState(null);
   const [sheets, setSheets] = useState([]);
   const [selectedSheet, setSelectedSheet] = useState(null);
   const [parsed, setParsed] = useState(null);
@@ -692,29 +692,33 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
     const file = e.target.files?.[0];
     if (!file) return;
     const buf = await file.arrayBuffer();
-    setFileBuffer(buf);
     setAcknowledgedNegatives(false);
     setParsed(null);
     setError(null);
 
-    const sheetList = listAccumulatorXlsxSheets(buf);
-    if (sheetList.length === 0) {
-      setError('File could not be read as an Excel workbook.');
+    // Read the workbook ONCE — sheet-switching below re-parses only the
+    // already-in-memory workbook, not the raw file bytes, so it's instant
+    // instead of re-decoding an 800-row multi-sheet file every click.
+    const { workbook: wb, sheets: sheetList, error: readError } = readAccumulatorWorkbook(buf);
+    if (readError) {
+      setError(readError);
+      setWorkbook(null);
       return;
     }
+    setWorkbook(wb);
     setSheets(sheetList);
     // Many real accumulator workbooks accumulate one updated sheet per
     // revision through the month (e.g. dated sheet names appended left to
     // right) — the LAST sheet is far more likely to be the current one than
     // the first, but this is only ever a starting guess: the dropdown below
     // always shows every sheet so the admin picks explicitly, never silently.
-    const defaultSheet = sheetList[sheetList.length - 1].name;
+    const defaultSheet = sheetList[sheetList.length - 1]?.name ?? null;
     setSelectedSheet(defaultSheet);
-    runParse(buf, defaultSheet);
+    runParse(wb, defaultSheet);
   }
 
-  function runParse(buf, sheetName) {
-    const result = parseAccumulatorXlsx(buf, sheetName);
+  function runParse(wb, sheetName) {
+    const result = parseAccumulatorSheet(wb, sheetName);
     if (result.error) {
       setError(result.error);
       setParsed(null);
@@ -727,7 +731,7 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
   function handleSheetChange(sheetName) {
     setSelectedSheet(sheetName);
     setAcknowledgedNegatives(false);
-    if (fileBuffer) runParse(fileBuffer, sheetName);
+    if (workbook) runParse(workbook, sheetName);
   }
 
   const negativeRows = parsed?.rows.filter((r) => r.negativeQty) ?? [];
@@ -769,7 +773,7 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
         onClose();
         setParsed(null);
         setError(null);
-        setFileBuffer(null);
+        setWorkbook(null);
         setSheets([]);
         setSelectedSheet(null);
       }}

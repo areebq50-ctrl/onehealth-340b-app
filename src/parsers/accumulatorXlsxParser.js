@@ -29,6 +29,23 @@ const NEW_BALANCE_ALIASES = ['new balance'];
 
 const REQUIRED_FIELDS = ['ndc', 'productName'];
 
+// Excel workbooks routinely carry a "used range" (sheet['!ref']) far wider
+// than any real data — a stray fill color or border applied across a whole
+// swath of empty columns is enough to push it out thousands of columns.
+// sheet_to_json with no range limit materializes every cell in that range,
+// which turns a few-hundred-row sheet into tens of millions of phantom
+// empty cells and multi-second parses. No real accumulator file needs more
+// than a couple dozen columns, so the read is capped well above that.
+const MAX_REALISTIC_COLUMNS = 60;
+
+function boundedRange(sheet) {
+  if (!sheet['!ref']) return undefined;
+  const range = XLSX.utils.decode_range(sheet['!ref']);
+  if (range.e.c <= MAX_REALISTIC_COLUMNS) return sheet['!ref'];
+  range.e.c = MAX_REALISTIC_COLUMNS;
+  return XLSX.utils.encode_range(range);
+}
+
 function normalizeHeaderCell(v) {
   return String(v ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
@@ -46,50 +63,44 @@ function findColumnIndex(headerRow, aliases) {
 }
 
 /**
- * Reads just the sheet names + row counts from a workbook, so the caller can
- * ask the admin which one to import BEFORE parsing it. Many real pharmacy
- * accumulator workbooks accumulate one sheet per update through the month
- * (e.g. "Master 06_05", "New Accumulator 6_16", "New Accumulator 6_22") —
- * silently picking the first one is silently picking the STALEST one, which
- * is exactly backwards. Never guess for a multi-sheet workbook.
+ * Reads an .xlsx/.xls file ONE time into an in-memory workbook object, plus
+ * its sheet names + row counts, so the caller can show a sheet picker before
+ * committing to a parse — and so switching the picked sheet afterward never
+ * re-reads the raw file bytes again (parsing an 800-row, 4-sheet workbook
+ * twice was visibly slow; this makes the second-and-later parse instant).
  */
-export function listAccumulatorXlsxSheets(arrayBuffer) {
+export function readAccumulatorWorkbook(arrayBuffer) {
   try {
     const workbook = XLSX.read(arrayBuffer, { type: 'array' });
-    return workbook.SheetNames.map((name) => {
+    const sheets = workbook.SheetNames.map((name) => {
       const sheet = workbook.Sheets[name];
       const ref = sheet['!ref'];
       const rowCount = ref ? XLSX.utils.decode_range(ref).e.r : 0;
       return { name, rowCount };
     });
-  } catch {
-    return [];
+    return { workbook, sheets, error: null };
+  } catch (err) {
+    return { workbook: null, sheets: [], error: `File could not be read as an Excel workbook: ${err.message}` };
   }
 }
 
 /**
- * Parses an admin-uploaded accumulator starting-balance file. Validates that
- * all required columns (NDC, Product Name, Qty on Hand) are present before
- * accepting the file, and returns a preview the admin must confirm before
- * anything is written to the database. `sheetName` must be supplied by the
- * caller (see listAccumulatorXlsxSheets) rather than defaulted, so a
- * multi-sheet workbook never gets silently parsed from the wrong sheet.
+ * Parses one sheet of an already-read workbook (see readAccumulatorWorkbook)
+ * into accumulator rows, validating required columns and returning a
+ * preview the admin must confirm before anything is written to the
+ * database. `sheetName` must be supplied by the caller rather than
+ * defaulted, so a multi-sheet workbook never gets silently parsed from the
+ * wrong sheet — many real accumulator workbooks accumulate one updated
+ * sheet per revision through the month, so the first sheet is reliably the
+ * STALEST one, not the newest.
  */
-export function parseAccumulatorXlsx(arrayBuffer, sheetName) {
-  let workbook;
-  try {
-    workbook = XLSX.read(arrayBuffer, { type: 'array' });
-  } catch (err) {
-    return { error: `File could not be read as an Excel workbook: ${err.message}`, rows: [], skippedRows: [] };
-  }
-
-  if (!sheetName) sheetName = workbook.SheetNames[0];
-  if (!sheetName || !workbook.Sheets[sheetName]) {
+export function parseAccumulatorSheet(workbook, sheetName) {
+  if (!sheetName || !workbook?.Sheets?.[sheetName]) {
     return { error: 'The uploaded file contains no sheets.', rows: [], skippedRows: [] };
   }
 
   const sheet = workbook.Sheets[sheetName];
-  const rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '' });
+  const rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '', range: boundedRange(sheet) });
   if (rawRows.length === 0) return { error: 'The sheet is completely empty.', rows: [], skippedRows: [] };
 
   const headerRow = rawRows[0];

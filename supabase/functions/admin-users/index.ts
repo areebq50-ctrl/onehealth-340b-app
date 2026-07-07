@@ -1,10 +1,12 @@
 // Supabase Edge Function: admin-users
 //
 // Handles admin-only user management actions that require the Supabase
-// service role (inviting a new auth user by email). The service role key
-// never reaches the browser — it lives only in this function's environment.
+// service role (inviting a new auth user by email, permanently deleting an
+// account). The service role key never reaches the browser — it lives only
+// in this function's environment.
 //
 // POST body: { action: 'invite', email: string, role: 'admin' | 'regular' }
+//         or { action: 'delete', userId: string }
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 
@@ -45,7 +47,32 @@ Deno.serve(async (req) => {
       return json({ error: 'Only active admins may manage users' }, 403);
     }
 
-    const { action, email, role } = await req.json();
+    const { action, email, role, userId } = await req.json();
+
+    if (action === 'delete') {
+      if (!userId || typeof userId !== 'string') return json({ error: 'Missing userId' }, 400);
+      if (userId === userData.user.id) return json({ error: "You can't delete your own account." }, 400);
+
+      const { error: deleteErr } = await admin.auth.admin.deleteUser(userId);
+      if (deleteErr) {
+        // public.users cascades from auth.users, but claims/audit/order
+        // tables reference users.id WITHOUT cascade on purpose — the audit
+        // trail must stay attributable and immutable. A foreign-key
+        // violation here means this account has real history and should be
+        // deactivated instead of deleted, not silently worked around.
+        const isFkViolation = /foreign key|violates|database error deleting user/i.test(deleteErr.message);
+        return json(
+          {
+            error: isFkViolation
+              ? 'This account has claims, uploads, or audit history and can\'t be deleted — deactivate it instead to preserve the audit trail.'
+              : `Delete failed: ${deleteErr.message}`,
+          },
+          isFkViolation ? 409 : 400
+        );
+      }
+
+      return json({ success: true });
+    }
 
     if (action === 'invite') {
       if (!email || typeof email !== 'string') return json({ error: 'Missing email' }, 400);

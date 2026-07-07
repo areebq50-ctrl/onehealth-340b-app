@@ -1,17 +1,30 @@
 import { useEffect, useState } from 'react';
 import { Loader2, UserPlus, Building2, Store, ToggleLeft, ToggleRight, Pencil, Trash2 } from 'lucide-react';
 import { useFacility } from '../context/FacilityContext.jsx';
+import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
-import { fetchUsers, updateUserRole, setUserActive, inviteUser, addFacility, addPharmacy, updatePharmacy, deletePharmacy } from '../lib/settingsApi.js';
+import {
+  fetchUsers,
+  updateUserRole,
+  setUserActive,
+  inviteUser,
+  deleteUserAccount,
+  addFacility,
+  addPharmacy,
+  updatePharmacy,
+  deletePharmacy,
+} from '../lib/settingsApi.js';
 import { SkeletonTable } from '../components/common/Skeleton.jsx';
 
 function UsersPanel() {
   const toast = useToast();
+  const { user: currentUser } = useAuth();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [email, setEmail] = useState('');
   const [role, setRole] = useState('regular');
   const [inviting, setInviting] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
 
   async function load() {
     setLoading(true);
@@ -62,6 +75,26 @@ function UsersPanel() {
       toast.success(user.active ? 'User deactivated.' : 'User reactivated.');
     } catch (err) {
       toast.error(`Update failed: ${err.message}`);
+    }
+  }
+
+  async function handleDelete(user) {
+    if (
+      !window.confirm(
+        `Permanently delete ${user.email}? This cannot be undone. If this account has ever uploaded a claim or touched the ` +
+          `accumulator, the delete will be blocked — deactivate it instead to preserve the audit trail.`
+      )
+    )
+      return;
+    setDeletingId(user.id);
+    try {
+      await deleteUserAccount(user.id);
+      setUsers((prev) => prev.filter((u) => u.id !== user.id));
+      toast.success(`${user.email} deleted.`);
+    } catch (err) {
+      toast.error(`Delete failed: ${err.message}`);
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -116,10 +149,23 @@ function UsersPanel() {
                     </span>
                   </td>
                   <td className="px-4 py-2.5">
-                    <button className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-teal" onClick={() => handleToggleActive(u)}>
-                      {u.active ? <ToggleRight className="h-5 w-5 text-teal" /> : <ToggleLeft className="h-5 w-5" />}
-                      {u.active ? 'Deactivate' : 'Reactivate'}
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <button className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-teal" onClick={() => handleToggleActive(u)}>
+                        {u.active ? <ToggleRight className="h-5 w-5 text-teal" /> : <ToggleLeft className="h-5 w-5" />}
+                        {u.active ? 'Deactivate' : 'Reactivate'}
+                      </button>
+                      {u.id !== currentUser?.id && (
+                        <button
+                          className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-danger"
+                          onClick={() => handleDelete(u)}
+                          disabled={deletingId === u.id}
+                          title="Permanently delete this account"
+                        >
+                          {deletingId === u.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                          Delete
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
