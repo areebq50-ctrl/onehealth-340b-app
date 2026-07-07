@@ -778,6 +778,14 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
             {parsed.rows.length} valid rows parsed{parsed.skippedRows.length > 0 ? `, ${parsed.skippedRows.length} skipped` : ''}. Review before
             confirming — this will upsert into {MONTH_NAMES[month - 1]} {year} for this pharmacy.
           </p>
+          {parsed.qtyOnHandIsNegated && (
+            <div className="mb-3 rounded-lg border border-teal-100 bg-teal-50 p-3 text-sm text-teal-800">
+              No raw &quot;Qty on Hand&quot; column was found, so this file&apos;s &quot;{parsed.qtyOnHandColumnLabel}&quot; column was
+              used instead and automatically sign-flipped on import — that column tracks a deficit/surplus figure (negative =
+              surplus) rather than a raw physical count, so its values are negated here to match the app&apos;s convention (positive =
+              units on hand). Double-check a few rows below against what you know is physically on the shelf before confirming.
+            </div>
+          )}
           {negativeRows.length > 0 && (
             <div className="mb-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-danger">
               <p className="font-semibold">

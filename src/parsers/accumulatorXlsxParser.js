@@ -6,7 +6,6 @@ const COLUMN_ALIASES = {
   ndc: ['ndc', 'ndc code', 'ndc#', 'ndc number'],
   productName: ['product name', 'drug name', 'product', 'description'],
   packSize: ['pack size', 'packsize'],
-  qtyOnHand: ['qty on hand', 'quantity on hand', 'qty', 'on hand'],
   expDay: ['exp day', 'expiration', 'exp date', 'expiry'],
   price340b: ['340b price', 'price 340b', 'price'],
   ppu340b: ['340b ppu', 'ppu 340b', 'ppu'],
@@ -14,7 +13,21 @@ const COLUMN_ALIASES = {
   manufacturer: ['manufacturer', 'mfr'],
 };
 
-const REQUIRED_FIELDS = ['ndc', 'productName', 'qtyOnHand'];
+// Two DIFFERENT sign conventions show up in real pharmacy spreadsheets for
+// "how much of this drug is on hand":
+//   - Raw physical count columns ("Qty on Hand") — positive = units you
+//     actually have. This is what accumulator.qty_on_hand stores.
+//   - Running-ledger "New Balance" columns, which track a deficit/surplus
+//     figure where NEGATIVE means surplus/over-replenished (confirmed
+//     against a real reference workbook's own formulas: dispensing is
+//     ADDED to New Balance, the opposite of the raw-count convention,
+//     because New Balance is the negation of the raw physical count).
+// Importing a "New Balance" value as-is into qty_on_hand silently flips
+// every future calculation's sign, so it's negated on the way in instead.
+const QTY_ON_HAND_RAW_ALIASES = ['qty on hand', 'quantity on hand', 'qty', 'on hand'];
+const NEW_BALANCE_ALIASES = ['new balance'];
+
+const REQUIRED_FIELDS = ['ndc', 'productName'];
 
 function normalizeHeaderCell(v) {
   return String(v ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -59,10 +72,18 @@ export function parseAccumulatorXlsx(arrayBuffer) {
     colIndex[field] = findColumnIndex(headerRow, aliases);
   }
 
+  // Prefer a raw physical "Qty on Hand" column; only fall back to a
+  // "New Balance" ledger column (negated on read) if no raw column exists.
+  const rawQtyIdx = findColumnIndex(headerRow, QTY_ON_HAND_RAW_ALIASES);
+  const newBalanceIdx = findColumnIndex(headerRow, NEW_BALANCE_ALIASES);
+  const qtyOnHandIsNegated = rawQtyIdx === -1 && newBalanceIdx >= 0;
+  colIndex.qtyOnHand = rawQtyIdx >= 0 ? rawQtyIdx : newBalanceIdx;
+
   const missingRequired = REQUIRED_FIELDS.filter((f) => colIndex[f] === -1);
-  if (missingRequired.length > 0) {
+  if (missingRequired.length > 0 || colIndex.qtyOnHand === -1) {
+    const missing = [...missingRequired, ...(colIndex.qtyOnHand === -1 ? ['qtyOnHand'] : [])];
     return {
-      error: `Missing required column(s): ${missingRequired.join(', ')}. Verify the file has NDC, Product Name, and Qty on Hand columns.`,
+      error: `Missing required column(s): ${missing.join(', ')}. Verify the file has NDC, Product Name, and a Qty on Hand (or New Balance) column.`,
       rows: [],
       skippedRows: [],
     };
@@ -85,11 +106,12 @@ export function parseAccumulatorXlsx(arrayBuffer) {
     }
 
     const qtyOnHandRaw = row[colIndex.qtyOnHand];
-    const qtyOnHand = toDecimal(qtyOnHandRaw);
+    let qtyOnHand = toDecimal(qtyOnHandRaw);
     if (qtyOnHand === null) {
       skippedRows.push({ rowNumber, reason: `Invalid Qty on Hand "${qtyOnHandRaw}"` });
       continue;
     }
+    if (qtyOnHandIsNegated) qtyOnHand = qtyOnHand.negated();
 
     rows.push({
       ndc,
@@ -114,5 +136,11 @@ export function parseAccumulatorXlsx(arrayBuffer) {
     return { error: 'No valid rows found after validation.', rows: [], skippedRows };
   }
 
-  return { error: null, rows, skippedRows };
+  return {
+    error: null,
+    rows,
+    skippedRows,
+    qtyOnHandIsNegated,
+    qtyOnHandColumnLabel: String(headerRow[colIndex.qtyOnHand] ?? '').trim(),
+  };
 }
