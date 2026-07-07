@@ -1,4 +1,4 @@
-import { supabase } from './supabaseClient.js';
+import { supabase, invokeEdgeFunction } from './supabaseClient.js';
 
 export async function fetchUsers() {
   const { data, error } = await supabase.from('users').select('*').order('email');
@@ -21,12 +21,7 @@ export async function setUserActive(userId, active) {
 }
 
 export async function inviteUser(email, role) {
-  const { data, error } = await supabase.functions.invoke('admin-users', {
-    body: { action: 'invite', email, role },
-  });
-  if (error) throw error;
-  if (data?.error) throw new Error(data.error);
-  return data;
+  return invokeEdgeFunction('admin-users', { action: 'invite', email, role });
 }
 
 /**
@@ -38,23 +33,7 @@ export async function inviteUser(email, role) {
  * have existed (invited by mistake, duplicate, never logged in).
  */
 export async function deleteUserAccount(userId) {
-  const { data, error } = await supabase.functions.invoke('admin-users', {
-    body: { action: 'delete', userId },
-  });
-  if (error) {
-    let detail = error.message;
-    if (error.context && typeof error.context.json === 'function') {
-      try {
-        const body = await error.context.json();
-        if (body?.error) detail = body.error;
-      } catch {
-        // response body wasn't JSON — fall back to the generic message
-      }
-    }
-    throw new Error(detail);
-  }
-  if (data?.error) throw new Error(data.error);
-  return data;
+  return invokeEdgeFunction('admin-users', { action: 'delete', userId });
 }
 
 export async function addFacility({ name, shortCode, notes }) {

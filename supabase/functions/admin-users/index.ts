@@ -12,6 +12,15 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+// Where the invite email's link sends the new user. Supabase falls back to
+// the dashboard's Authentication -> URL Configuration -> Site URL when this
+// isn't passed explicitly, which is still the default localhost:3000 on a
+// lot of projects — set via `supabase secrets set SITE_URL=...` to override
+// without touching dashboard settings. The redirect_to it produces also
+// carries `type=invite` in the hash, which the frontend uses to force a
+// "set your password" screen instead of dropping the new user straight
+// into the app with no password set.
+const SITE_URL = Deno.env.get('SITE_URL') ?? 'https://onehealth340bapp.vercel.app';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -78,7 +87,9 @@ Deno.serve(async (req) => {
       if (!email || typeof email !== 'string') return json({ error: 'Missing email' }, 400);
       const desiredRole = role === 'admin' ? 'admin' : 'regular';
 
-      const { data: invited, error: inviteErr } = await admin.auth.admin.inviteUserByEmail(email);
+      const { data: invited, error: inviteErr } = await admin.auth.admin.inviteUserByEmail(email, {
+        redirectTo: SITE_URL,
+      });
       if (inviteErr) return json({ error: `Invite failed: ${inviteErr.message}` }, 400);
 
       const { error: upsertErr } = await admin

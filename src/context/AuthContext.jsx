@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabaseClient';
+import { isPasswordSetupRedirect } from '../lib/inviteFlow.js';
 
 const AuthContext = createContext(null);
 
@@ -39,6 +40,13 @@ export function AuthProvider({ children }) {
   const [profile, setProfile] = useState(null);
   const [profileError, setProfileError] = useState(null);
   const [loading, setLoading] = useState(true);
+  // Two independent signals for "this session came from an invite/recovery
+  // email link, prompt for a password before letting them into the app":
+  // the raw-URL check (captured before Supabase's own hash-stripping, see
+  // inviteFlow.js) and the PASSWORD_RECOVERY auth event, which Supabase
+  // fires reliably for both invite and recovery links. Either one is
+  // enough; cleared once the user actually sets a password.
+  const [needsPasswordSetup, setNeedsPasswordSetup] = useState(isPasswordSetupRedirect);
 
   // Always hits the database directly — never a cached value — and reports
   // the full raw Supabase error (message/code/details/hint/status/stack)
@@ -92,6 +100,8 @@ export function AuthProvider({ children }) {
     const { data: listener } = supabase.auth.onAuthStateChange(async (event, newSession) => {
       if (!mounted) return;
       console.log(`[Auth] onAuthStateChange: event=${event} user=${newSession?.user?.id ?? 'none'}`); // eslint-disable-line no-console
+
+      if (event === 'PASSWORD_RECOVERY') setNeedsPasswordSetup(true);
 
       // Gate the app-wide loading flag on identity changes only, so the
       // users-table check for a fresh sign-in fully resolves (profile loaded
@@ -193,6 +203,8 @@ export function AuthProvider({ children }) {
     signIn,
     signOut,
     refreshProfile: () => loadProfile(session?.user?.id),
+    needsPasswordSetup,
+    clearNeedsPasswordSetup: () => setNeedsPasswordSetup(false),
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

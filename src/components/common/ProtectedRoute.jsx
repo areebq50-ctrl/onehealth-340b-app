@@ -72,7 +72,7 @@ function ProfileErrorScreen({ detail }) {
 }
 
 export default function ProtectedRoute({ children, adminOnly = false }) {
-  const { session, profile, profileError, loading } = useAuth();
+  const { session, profile, profileError, loading, needsPasswordSetup } = useAuth();
 
   if (loading) {
     return (
@@ -83,6 +83,11 @@ export default function ProtectedRoute({ children, adminOnly = false }) {
   }
 
   if (!session) return <Navigate to="/login" replace />;
+
+  // A session that arrived via an invite/recovery email link must set a
+  // real password before touching anything else — otherwise they'd have no
+  // way to log back in once this session expires.
+  if (needsPasswordSetup) return <Navigate to="/set-password" replace />;
 
   if (profileError) {
     return <ProfileErrorScreen detail={profileError} />;

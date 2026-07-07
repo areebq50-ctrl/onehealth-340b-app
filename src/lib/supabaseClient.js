@@ -17,3 +17,29 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     autoRefreshToken: true,
   },
 });
+
+/**
+ * Invokes a Supabase Edge Function and throws an Error with the REAL reason
+ * whenever possible. supabase-js's FunctionsHttpError only ever exposes a
+ * generic "Edge Function returned a non-2xx status code" via `.message` —
+ * the function's actual JSON error body is on `error.context` (a Response)
+ * and has to be read separately, or every failure looks identical no matter
+ * what actually went wrong server-side.
+ */
+export async function invokeEdgeFunction(name, body) {
+  const { data, error } = await supabase.functions.invoke(name, { body });
+  if (error) {
+    let detail = error.message;
+    if (error.context && typeof error.context.json === 'function') {
+      try {
+        const parsed = await error.context.json();
+        if (parsed?.error) detail = parsed.error;
+      } catch {
+        // response body wasn't JSON — fall back to the generic message
+      }
+    }
+    throw new Error(detail);
+  }
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
