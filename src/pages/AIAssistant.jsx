@@ -47,7 +47,7 @@ export default function AIAssistant() {
         .slice(0, -1) // exclude the message we're about to send separately in the request body
         .map((m) => ({ role: m.role, content: m.content }));
 
-      const { data, error } = await supabase.functions.invoke('claude-assistant', {
+      const { data, error } = await supabase.functions.invoke('ai-assistant', {
         body: {
           message: trimmed,
           history,
