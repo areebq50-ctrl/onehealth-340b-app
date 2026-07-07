@@ -1635,6 +1635,24 @@ alter default privileges in schema public grant select, insert, update, delete o
 alter default privileges in schema public grant usage, select on sequences to authenticated;
 
 -- ============================================================================
+-- PATCH: same base-GRANT gap as above, but for `service_role` — the role
+-- every Supabase Edge Function uses (via SUPABASE_SERVICE_ROLE_KEY) to query
+-- the database with elevated privileges. service_role normally bypasses RLS
+-- entirely on a standard Supabase project, but it still needs the base
+-- table GRANT checked before RLS is ever reached, and this project's schema
+-- was set up without that default bootstrap (see the `authenticated` patch
+-- above). Without this, every Edge Function query against any table fails
+-- with "permission denied for table X" — which is exactly why ai-assistant
+-- could query `users` fine from the SQL Editor (running as the `postgres`
+-- superuser) but got a permission error from inside the Edge Function.
+-- ============================================================================
+grant usage on schema public to service_role;
+grant select, insert, update, delete on all tables in schema public to service_role;
+grant usage, select on all sequences in schema public to service_role;
+alter default privileges in schema public grant select, insert, update, delete on tables to service_role;
+alter default privileges in schema public grant usage, select on sequences to service_role;
+
+-- ============================================================================
 -- PATCH: fix "Lawrence Hause" -> "Lawrence House" (was misspelled in the
 -- original seed data). One-time, idempotent — a no-op once already renamed.
 -- ============================================================================
