@@ -269,60 +269,62 @@ export default function ClaimBatchResults() {
         ))}
       </div>
 
-      {tab === 'Overview' && (
-        <div className="space-y-6">
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-            <StatCard label="Source Rows" value={claim.total_rows ?? '—'} />
-            <StatCard label="Valid Rows" value={claim.valid_rows ?? '—'} />
-            <StatCard label="Invalid / Rejected Rows" value={claim.invalid_rows ?? 0} tone={claim.invalid_rows > 0 ? 'warning' : 'navy'} />
-            <StatCard label="Claim Line Count" value={claim.claim_line_count ?? rawLines.length} />
-            <StatCard label="Distinct RX Count" value={claim.distinct_rx_count ?? '—'} />
-            <StatCard label="Distinct NDC Count" value={claim.distinct_ndc_count ?? '—'} />
-            <StatCard label="Total Qty Dispensed" value={formatQty(claim.total_qty_dispensed)} />
-            <StatCard label="Matched NDCs" value={claim.matched_count ?? 0} tone="teal" />
-            <StatCard
-              label="Unmatched NDCs"
-              value={claim.unmatched_count ?? 0}
-              tone={claim.unmatched_count > 0 ? 'coral' : 'navy'}
-              onClick={claim.unmatched_count > 0 ? goToUnmatched : undefined}
-            />
-            <StatCard label="Estimated Reimbursement" value={formatCurrency(claim.total_reimbursement)} tone="teal" />
-            <StatCard label="Total Full Packages to Order" value={replenishmentTotals.totalRecommendedPacks} tone="warning" />
-            <StatCard label="Negative On-Hand NDCs" value={negativeCount} tone={negativeCount > 0 ? 'danger' : 'navy'} />
-          </div>
-          <p className="text-xs text-gray-400">
-            &quot;Claim line count&quot;, &quot;distinct RX count&quot;, and &quot;distinct NDC count&quot; are different measures — see the All Claims and Replenishment
-            tabs for the full breakdown. Total packages above is for operational convenience only; the NDC-by-NDC list in Replenishment is the
-            authoritative requirement (packages from different NDCs are not interchangeable).
-          </p>
-          {claim.unmatched_count > 0 && (
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-warning">
-              <span className="flex items-center gap-2">
-                <AlertTriangle className="h-4 w-4" />
-                {claim.unmatched_count} NDC{claim.unmatched_count > 1 ? 's' : ''} still need review — every unmatched NDC must be
-                added, matched, or explicitly skipped with a reason.
-              </span>
-              <div className="flex gap-2">
-                <button className="btn-secondary" onClick={() => setBulkAssignOpen(true)}>
-                  Assign All
-                </button>
-                <button className="btn-secondary" onClick={goToUnmatched}>
-                  <Wrench className="h-4 w-4" /> Review Now
-                </button>
-              </div>
-            </div>
-          )}
+      {/* All four tabs stay mounted and are only hidden via CSS, not
+          conditionally rendered — DataTable's search/sort/pagination state
+          (and anything else local to a tab) used to reset every time you
+          switched away and back, which read as the page "reloading". */}
+      <div className={tab === 'Overview' ? 'space-y-6' : 'hidden'}>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+          <StatCard label="Source Rows" value={claim.total_rows ?? '—'} />
+          <StatCard label="Valid Rows" value={claim.valid_rows ?? '—'} />
+          <StatCard label="Invalid / Rejected Rows" value={claim.invalid_rows ?? 0} tone={claim.invalid_rows > 0 ? 'warning' : 'navy'} />
+          <StatCard label="Claim Line Count" value={claim.claim_line_count ?? rawLines.length} />
+          <StatCard label="Distinct RX Count" value={claim.distinct_rx_count ?? '—'} />
+          <StatCard label="Distinct NDC Count" value={claim.distinct_ndc_count ?? '—'} />
+          <StatCard label="Total Qty Dispensed" value={formatQty(claim.total_qty_dispensed)} />
+          <StatCard label="Matched NDCs" value={claim.matched_count ?? 0} tone="teal" />
+          <StatCard
+            label="Unmatched NDCs"
+            value={claim.unmatched_count ?? 0}
+            tone={claim.unmatched_count > 0 ? 'coral' : 'navy'}
+            onClick={claim.unmatched_count > 0 ? goToUnmatched : undefined}
+          />
+          <StatCard label="Estimated Reimbursement" value={formatCurrency(claim.total_reimbursement)} tone="teal" />
+          <StatCard label="Total Full Packages to Order" value={replenishmentTotals.totalRecommendedPacks} tone="warning" />
+          <StatCard label="Negative On-Hand NDCs" value={negativeCount} tone={negativeCount > 0 ? 'danger' : 'navy'} />
         </div>
-      )}
+        <p className="text-xs text-gray-400">
+          &quot;Claim line count&quot;, &quot;distinct RX count&quot;, and &quot;distinct NDC count&quot; are different measures — see the All Claims and Replenishment
+          tabs for the full breakdown. Total packages above is for operational convenience only; the NDC-by-NDC list in Replenishment is the
+          authoritative requirement (packages from different NDCs are not interchangeable).
+        </p>
+        {claim.unmatched_count > 0 && (
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-warning">
+            <span className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4" />
+              {claim.unmatched_count} NDC{claim.unmatched_count > 1 ? 's' : ''} still need review — every unmatched NDC must be
+              added, matched, or explicitly skipped with a reason.
+            </span>
+            <div className="flex gap-2">
+              <button className="btn-secondary" onClick={() => setBulkAssignOpen(true)}>
+                Assign All
+              </button>
+              <button className="btn-secondary" onClick={goToUnmatched}>
+                <Wrench className="h-4 w-4" /> Review Now
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
-      {tab === 'All Claims' && (
+      <div className={tab === 'All Claims' ? '' : 'hidden'}>
         <AllClaimsTab
           rows={rawLines}
           onResolveClick={(ndc) => setResolveTarget(lineItems.find((li) => li.ndc === ndc))}
         />
-      )}
+      </div>
 
-      {tab === 'Replenishment by NDC' && (
+      <div className={tab === 'Replenishment by NDC' ? '' : 'hidden'}>
         <ReplenishmentTab
           dailyResults={dailyResults}
           orderPanelRows={orderPanelRows}
@@ -343,9 +345,11 @@ export default function ClaimBatchResults() {
             })
           }
         />
-      )}
+      </div>
 
-      {tab === 'Accumulator Changes & Audit' && <AuditTab rows={auditLog} />}
+      <div className={tab === 'Accumulator Changes & Audit' ? '' : 'hidden'}>
+        <AuditTab rows={auditLog} />
+      </div>
 
       <ExcelPreviewModal
         open={previewOpen}
