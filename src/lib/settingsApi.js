@@ -12,7 +12,11 @@ export async function updateUserRole(userId, role) {
 }
 
 export async function setUserActive(userId, active) {
-  const { error } = await supabase.from('users').update({ active }).eq('id', userId);
+  // Goes through the set_user_active RPC rather than a direct table update:
+  // the users_update_admin RLS policy requires the caller to already be an
+  // active admin, which deadlocks an admin trying to reactivate their own
+  // account after going inactive. The RPC checks role='admin' only.
+  const { error } = await supabase.rpc('set_user_active', { p_user_id: userId, p_active: active });
   if (error) throw error;
 }
 

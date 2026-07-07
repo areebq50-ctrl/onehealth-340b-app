@@ -1950,3 +1950,39 @@ $$;
 
 revoke all on function public.receive_invoice_bulk from public;
 grant execute on function public.receive_invoice_bulk to authenticated;
+
+-- ============================================================================
+-- PATCH: fix admin self-lockout on the users.active toggle.
+--
+-- users_update_admin's RLS policy gates on is_admin(), which requires the
+-- CALLING user's own row to already have active = true (see is_admin()
+-- above: "role = 'admin' and active"). If an admin's own account ever goes
+-- inactive, is_admin() then evaluates false for them, which blocks the RLS
+-- policy on the very UPDATE that would set active back to true — a
+-- chicken-and-egg lockout. Postgres RLS silently filters out (0 rows
+-- affected) rather than erroring, so the client sees a "successful" update
+-- that did nothing, which is exactly what makes this bug so confusing.
+--
+-- Fix: a SECURITY DEFINER RPC whose admin check only requires role='admin'
+-- on the caller's row, not also active — bypassing RLS entirely (it reads
+-- the caller's row directly via a plain select). Regular non-admin actions
+-- are unaffected; is_admin()/is_active_user() and the RLS policies that use
+-- them are unchanged for every other admin-gated table.
+-- ============================================================================
+create or replace function public.set_user_active(p_user_id uuid, p_active boolean)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not exists (select 1 from public.users where id = auth.uid() and role = 'admin') then
+    raise exception 'Only admins may change a user''s active status';
+  end if;
+
+  update public.users set active = p_active where id = p_user_id;
+end;
+$$;
+
+revoke all on function public.set_user_active from public;
+grant execute on function public.set_user_active to authenticated;
