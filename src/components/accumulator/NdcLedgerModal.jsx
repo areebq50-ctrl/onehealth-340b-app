@@ -3,40 +3,9 @@ import { Loader2, ScrollText } from 'lucide-react';
 import Modal from '../common/Modal.jsx';
 import EmptyState from '../common/EmptyState.jsx';
 import { fetchNdcAuditHistory } from '../../lib/accumulatorApi.js';
-import { formatCurrency, formatQty, signedPacksToOrder } from '../../lib/calculations.js';
+import { formatCurrency, formatQty } from '../../lib/calculations.js';
+import { groupAuditEntriesByDay } from '../../lib/ledger.js';
 import { useToast } from '../../context/ToastContext.jsx';
-
-/**
- * Groups raw audit-log entries (one row per event) into one row per
- * calendar day (one row per date), matching how the pharmacy's own
- * spreadsheet tracks a period: Starting Balance -> that day's Dispensed
- * -> that day's Order Received -> Ending Balance -> Packs to Order,
- * instead of a flat event log. Multiple claim_dispense entries on the
- * same day are summed into one "Dispensed" figure for that day, same for
- * order_received; the day's Starting Balance is the prior day's Ending
- * Balance (or the first event's own prior_qty for day one).
- */
-function groupByDay(entries, packSize) {
-  const days = new Map();
-  for (const e of entries) {
-    const dateKey = new Date(e.timestamp).toISOString().slice(0, 10);
-    if (!days.has(dateKey)) {
-      days.set(dateKey, { date: dateKey, startingBalance: e.prior_qty, dispensed: 0, ordered: 0, otherEvents: [], endingBalance: e.new_qty });
-    }
-    const day = days.get(dateKey);
-    const change = Number(e.new_qty ?? 0) - Number(e.prior_qty ?? 0);
-    if (e.action_type === 'claim_dispense') day.dispensed += -change; // change is negative for a dispense
-    else if (e.action_type === 'order_received') day.ordered += change;
-    else day.otherEvents.push(e.action_type);
-    day.endingBalance = e.new_qty;
-  }
-  return Array.from(days.values())
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .map((day) => ({
-      ...day,
-      packsToOrder: signedPacksToOrder(day.endingBalance, packSize),
-    }));
-}
 
 /**
  * Running, day-by-day ledger for one NDC across a whole period — matches
@@ -71,7 +40,7 @@ export default function NdcLedgerModal({ open, onClose, row, facilityId, pharmac
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, row, facilityId, pharmacyId, month, year]);
 
-  const days = useMemo(() => groupByDay(entries, row?.pack_size), [entries, row]);
+  const days = useMemo(() => groupAuditEntriesByDay(entries, row?.pack_size), [entries, row]);
   const totalReimbursement = useMemo(
     () => entries.reduce((sum, e) => sum + Number(e.reimbursement_amount ?? 0), 0),
     [entries]

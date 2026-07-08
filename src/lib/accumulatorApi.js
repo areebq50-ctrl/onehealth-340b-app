@@ -213,6 +213,28 @@ export async function importAccumulatorRows({ facilityId, pharmacyId, month, yea
  * insert-only audit trail, so it's the true chronological record, not a
  * reconstruction.
  */
+/**
+ * Every accumulator_audit_log entry for a facility+pharmacy+period, across
+ * ALL NDCs at once — powers the "Daily Ledger" view (the whole accumulator,
+ * one row per NDC, as of a chosen day) so it doesn't require opening each
+ * NDC's history individually. Grouped/sliced by day per-NDC client-side via
+ * lib/ledger.js's buildDailySnapshot.
+ */
+export async function fetchPeriodAuditHistory(facilityId, pharmacyId, month, year) {
+  const from = `${year}-${String(month).padStart(2, '0')}-01`;
+  const toDate = month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, '0')}-01`;
+  const { data, error } = await supabase
+    .from('accumulator_audit_log')
+    .select('*')
+    .eq('facility_id', facilityId)
+    .eq('pharmacy_id', pharmacyId)
+    .gte('timestamp', from)
+    .lt('timestamp', toDate)
+    .order('timestamp');
+  if (error) throw error;
+  return data ?? [];
+}
+
 export async function fetchNdcAuditHistory(facilityId, pharmacyId, ndc, month, year) {
   const from = `${year}-${String(month).padStart(2, '0')}-01`;
   const toDate = month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, '0')}-01`;

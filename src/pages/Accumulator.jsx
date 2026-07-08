@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Download, Plus, Upload, FileText, CalendarRange, Loader2, Lock, Pencil, Trash2, AlertTriangle, ScrollText } from 'lucide-react';
+import { Download, Plus, Upload, FileText, CalendarRange, CalendarDays, Loader2, Lock, Pencil, Trash2, AlertTriangle, ScrollText } from 'lucide-react';
 import { useFacility } from '../context/FacilityContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
@@ -14,11 +14,13 @@ import {
   deleteAccumulatorPeriod,
   countClaimsForPeriod,
   receiveInvoiceBulk,
+  fetchPeriodAuditHistory,
 } from '../lib/accumulatorApi.js';
 import { readAccumulatorWorkbook, parseAccumulatorSheet } from '../parsers/accumulatorXlsxParser.js';
 import { parseCardinalHealthInvoice } from '../parsers/cardinalHealthInvoiceParser.js';
 import { exportAccumulator } from '../lib/excelExport.js';
 import { formatCurrency, formatQty, packsOnHand, costOnHand340b, Decimal } from '../lib/calculations.js';
+import { buildDailySnapshot } from '../lib/ledger.js';
 import { normalizeNdc } from '../lib/ndc.js';
 import { getExpiryTone, EXPIRY_TONE_CLASSES } from '../components/accumulator/expiry.js';
 import NdcLedgerModal from '../components/accumulator/NdcLedgerModal.jsx';
@@ -123,6 +125,10 @@ export default function Accumulator() {
   const [editingRow, setEditingRow] = useState(null);
   const [savingEdit, setSavingEdit] = useState(false);
   const [ledgerRow, setLedgerRow] = useState(null);
+  const [view, setView] = useState('master'); // 'master' | 'daily'
+  const [dailyEntries, setDailyEntries] = useState([]);
+  const [loadingDaily, setLoadingDaily] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [rolloverOpen, setRolloverOpen] = useState(false);
@@ -170,6 +176,59 @@ export default function Accumulator() {
     loadRows();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedFacilityId, selectedPharmacyId, period]);
+
+  // A new facility/pharmacy/period invalidates any previously-picked date —
+  // let the default-date effect below re-derive a sensible one for the new
+  // context instead of carrying forward a date from a different period.
+  useEffect(() => {
+    setSelectedDate(null);
+  }, [selectedFacilityId, selectedPharmacyId, period]);
+
+  useEffect(() => {
+    async function loadDaily() {
+      if (view !== 'daily' || !facilitySelected || !period || isAllPharmacies) {
+        setDailyEntries([]);
+        return;
+      }
+      setLoadingDaily(true);
+      try {
+        const data = await fetchPeriodAuditHistory(selectedFacilityId, selectedPharmacyId, period.month, period.year);
+        setDailyEntries(data);
+      } catch (err) {
+        toast.error(`Failed to load daily ledger: ${err.message}`);
+      } finally {
+        setLoadingDaily(false);
+      }
+    }
+    loadDaily();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, selectedFacilityId, selectedPharmacyId, period, isAllPharmacies]);
+
+  const entriesByNdc = useMemo(() => {
+    const map = new Map();
+    for (const e of dailyEntries) {
+      if (!map.has(e.ndc)) map.set(e.ndc, []);
+      map.get(e.ndc).push(e);
+    }
+    return map;
+  }, [dailyEntries]);
+
+  const activityDates = useMemo(
+    () => Array.from(new Set(dailyEntries.map((e) => new Date(e.timestamp).toISOString().slice(0, 10)))).sort(),
+    [dailyEntries]
+  );
+
+  // Default the "as of" date once daily data has loaded: today, if today
+  // falls inside the selected period, otherwise the most recent day that
+  // actually had activity, otherwise just the 1st of the period.
+  useEffect(() => {
+    if (view !== 'daily' || selectedDate || loadingDaily || !period) return;
+    const today = new Date();
+    const todayInPeriod = today.getFullYear() === period.year && today.getMonth() + 1 === period.month;
+    const todayStr = today.toISOString().slice(0, 10);
+    const fallback = activityDates[activityDates.length - 1] ?? `${period.year}-${String(period.month).padStart(2, '0')}-01`;
+    setSelectedDate(todayInPeriod ? todayStr : fallback);
+  }, [view, selectedDate, loadingDaily, activityDates, period]);
 
   const isLatestPeriod = periods.length > 0 && period && periods[0].month === period.month && periods[0].year === period.year;
 
@@ -237,6 +296,91 @@ export default function Accumulator() {
       return true;
     });
   }, [rows, filters]);
+
+  // Same expiry/manufacturer filters as the master view, but negativeOnly is
+  // applied after the snapshot below (against that day's Ending Balance,
+  // not the row's current qty_on_hand) since the whole point of this view is
+  // seeing what the balance was on a specific day, not today.
+  const dailyBaseRows = useMemo(() => {
+    return rows.filter((r) => {
+      if (filters.manufacturer !== 'all' && r.manufacturer !== filters.manufacturer) return false;
+      if (filters.expiry !== 'all') {
+        const { daysUntil } = getExpiryTone(r.exp_day);
+        if (daysUntil === undefined || daysUntil > Number(filters.expiry)) return false;
+      }
+      return true;
+    });
+  }, [rows, filters]);
+
+  const dailyRows = useMemo(() => {
+    if (!selectedDate) return [];
+    const snapshot = buildDailySnapshot(dailyBaseRows, entriesByNdc, selectedDate);
+    return filters.negativeOnly ? snapshot.filter((r) => Number(r.endingBalance) < 0) : snapshot;
+  }, [dailyBaseRows, entriesByNdc, selectedDate, filters.negativeOnly]);
+
+  const dailyColumns = useMemo(
+    () => [
+      { key: 'ndc', label: 'NDC', sortable: true, render: (r) => <span className="font-mono text-xs">{r.ndc}</span> },
+      { key: 'product_name', label: 'Product Name', sortable: true },
+      ...(isAllPharmacies ? [{ key: 'pharmacyName', label: 'Pharmacy', sortable: true }] : []),
+      { key: 'pack_size', label: 'Pack Size', sortable: true, accessor: (r) => Number(r.pack_size ?? 0) },
+      {
+        key: 'startingBalance',
+        label: 'Starting Balance',
+        sortable: true,
+        accessor: (r) => Number(r.startingBalance ?? 0),
+        render: (r) => formatQty(r.startingBalance),
+      },
+      {
+        key: 'dispensed',
+        label: 'Dispensed',
+        sortable: true,
+        accessor: (r) => Number(r.dispensed ?? 0),
+        render: (r) => (r.dispensed > 0 ? <span className="text-danger">-{formatQty(r.dispensed)}</span> : '—'),
+      },
+      {
+        key: 'ordered',
+        label: 'Order Received',
+        sortable: true,
+        accessor: (r) => Number(r.ordered ?? 0),
+        render: (r) => (r.ordered > 0 ? <span className="text-success">+{formatQty(r.ordered)}</span> : '—'),
+      },
+      {
+        key: 'endingBalance',
+        label: 'Ending Balance',
+        sortable: true,
+        accessor: (r) => Number(r.endingBalance ?? 0),
+        render: (r) => <span className={Number(r.endingBalance) < 0 ? 'font-semibold text-danger' : 'font-semibold'}>{formatQty(r.endingBalance)}</span>,
+      },
+      {
+        key: 'packsToOrder',
+        label: 'Packs to Order',
+        sortable: true,
+        accessor: (r) => (r.packsToOrder?.flagged ? 0 : Number(r.packsToOrder?.value ?? 0)),
+        render: (r) => (r.packsToOrder?.flagged ? '—' : formatQty(r.packsToOrder.value, 4)),
+      },
+      {
+        key: 'exp_day',
+        label: 'Exp Day',
+        sortable: true,
+        render: (r) => {
+          const { tone, label } = getExpiryTone(r.exp_day);
+          return <span className={`badge ${EXPIRY_TONE_CLASSES[tone]}`}>{label}</span>;
+        },
+      },
+      { key: 'manufacturer', label: 'Manufacturer', sortable: true },
+      {
+        key: 'history',
+        label: 'Full History',
+        render: (r) => (
+          <button className="btn-secondary px-2 py-1" title="View this NDC's full running ledger for the period" onClick={() => setLedgerRow(r)}>
+            <ScrollText className="h-3.5 w-3.5" />
+          </button>
+        ),
+      },
+    ],
+    [isAllPharmacies]
+  );
 
   async function refreshRows() {
     const data = await fetchAccumulatorRows(selectedFacilityId, selectedPharmacyId, period.month, period.year);
@@ -391,6 +535,31 @@ export default function Accumulator() {
               ))}
             </select>
           </div>
+          {period && (
+            <div>
+              <label className="label-text">View</label>
+              <div className="flex rounded-lg border border-gray-200 p-0.5">
+                <button
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                    view === 'master' ? 'bg-navy text-white' : 'text-gray-500 hover:text-navy'
+                  }`}
+                  onClick={() => setView('master')}
+                >
+                  Master
+                </button>
+                <button
+                  className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                    view === 'daily' ? 'bg-navy text-white' : 'text-gray-500 hover:text-navy'
+                  } ${isAllPharmacies ? 'cursor-not-allowed opacity-50' : ''}`}
+                  onClick={() => !isAllPharmacies && setView('daily')}
+                  disabled={isAllPharmacies}
+                  title={isAllPharmacies ? 'Select a specific pharmacy to view the Daily Ledger' : 'One row per NDC, showing that day’s Starting/Dispensed/Order Received/Ending Balance'}
+                >
+                  <CalendarDays className="h-3.5 w-3.5" /> Daily Ledger
+                </button>
+              </div>
+            </div>
+          )}
           {!isLatestPeriod && period && (
             <span className="flex items-center gap-1.5 rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-500">
               <Lock className="h-3.5 w-3.5" /> Historical period — read only
@@ -408,6 +577,19 @@ export default function Accumulator() {
 
       {period && (
         <div className="card flex flex-wrap items-end gap-4 p-4">
+          {view === 'daily' && (
+            <div>
+              <label className="label-text">As of date</label>
+              <input
+                className="input-field"
+                type="date"
+                min={`${period.year}-${String(period.month).padStart(2, '0')}-01`}
+                max={`${period.year}-${String(period.month).padStart(2, '0')}-${String(new Date(period.year, period.month, 0).getDate()).padStart(2, '0')}`}
+                value={selectedDate ?? ''}
+                onChange={(e) => setSelectedDate(e.target.value)}
+              />
+            </div>
+          )}
           <div>
             <label className="label-text">Expiring within</label>
             <select
@@ -450,7 +632,7 @@ export default function Accumulator() {
             </button>
           )}
           <span className="ml-auto text-xs text-gray-400">
-            {filteredRows.length} of {rows.length} rows
+            {view === 'daily' ? `${dailyRows.length} of ${rows.length} rows` : `${filteredRows.length} of ${rows.length} rows`}
           </span>
         </div>
       )}
@@ -475,6 +657,19 @@ export default function Accumulator() {
             )
           }
         />
+      ) : view === 'daily' ? (
+        isAllPharmacies ? (
+          <EmptyState
+            title="Select a specific pharmacy"
+            message="The Daily Ledger shows one pharmacy's day-by-day balances for every NDC at once — pick a pharmacy above to view it."
+          />
+        ) : loadingDaily ? (
+          <SkeletonTable rows={8} cols={9} />
+        ) : dailyRows.length === 0 ? (
+          <EmptyState title="No rows match these filters" message="Try clearing a filter above, or picking a different date." />
+        ) : (
+          <DataTable columns={dailyColumns} rows={dailyRows} rowKey={(r) => r.id} searchPlaceholder="Search NDC, product name, or manufacturer..." />
+        )
       ) : filteredRows.length === 0 ? (
         <EmptyState title="No rows match these filters" message="Try clearing a filter above." />
       ) : (
