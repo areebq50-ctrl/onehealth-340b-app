@@ -5,6 +5,7 @@ import { fetchClaimDetail } from '../lib/dashboardApi.js';
 import { fetchClaimRawLines, fetchAuditLogByClaim, findAccumulatorRow, deleteClaim } from '../lib/claimsApi.js';
 import { confirmReplenishmentOrder } from '../lib/accumulatorApi.js';
 import { formatCurrency, formatQty, packsToOrder, signedPacksToOrder, Decimal } from '../lib/calculations.js';
+import { explainOnHand, explainDispensed, explainNewBalance, explainSignedPacksToOrder, explainRecommendedPacks } from '../lib/signExplain.js';
 import { exportDailyClaims, exportReplenishmentReport, exportProcessedWorkbook } from '../lib/excelExport.js';
 import { useToast } from '../context/ToastContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -249,9 +250,15 @@ export default function ClaimBatchResults() {
       </div>
 
       {negativeCount > 0 && (
-        <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-danger">
-          <AlertTriangle className="h-4 w-4" />
-          {negativeCount} NDC{negativeCount > 1 ? 's' : ''} went negative on-hand from this claim.
+        <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-danger">
+          <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+          <span>
+            {negativeCount} NDC{negativeCount > 1 ? 's' : ''} went negative on-hand from this claim.{' '}
+            <span className="text-red-700">
+              A negative balance means more was dispensed today than was on record — a real shortage, not a data error by itself.
+              These NDCs need a replenishment order; see them highlighted in the <strong>Replenishment by NDC</strong> tab below.
+            </span>
+          </span>
         </div>
       )}
 
@@ -566,14 +573,21 @@ function ReplenishmentTab({
       label: 'Starting Balance (Qty)',
       sortable: true,
       accessor: (r) => (r.startingBalance !== null ? Number(r.startingBalance) : null),
-      render: (r) => (r.startingBalance !== null ? formatQty(r.startingBalance) : '—'),
+      render: (r) =>
+        r.startingBalance !== null ? (
+          <span className={Number(r.startingBalance) < 0 ? 'text-danger' : ''} title={explainOnHand(r.startingBalance)}>
+            {formatQty(r.startingBalance)}
+          </span>
+        ) : (
+          '—'
+        ),
     },
     {
       key: 'qtyDispensedToday',
       label: 'Qty Dispensed Today',
       sortable: true,
       accessor: (r) => Number(r.qtyDispensedToday ?? 0),
-      render: (r) => formatQty(r.qtyDispensedToday),
+      render: (r) => <span title={explainDispensed(r.qtyDispensedToday)}>{formatQty(r.qtyDispensedToday)}</span>,
     },
     {
       key: 'newBalance',
@@ -582,7 +596,9 @@ function ReplenishmentTab({
       accessor: (r) => (r.newBalance !== null ? Number(r.newBalance) : null),
       render: (r) =>
         r.newBalance !== null ? (
-          <span className={Number(r.newBalance) < 0 ? 'font-semibold text-danger' : ''}>{formatQty(r.newBalance)}</span>
+          <span className={Number(r.newBalance) < 0 ? 'font-semibold text-danger' : ''} title={explainNewBalance(r.newBalance)}>
+            {formatQty(r.newBalance)}
+          </span>
         ) : (
           '—'
         ),
@@ -592,7 +608,14 @@ function ReplenishmentTab({
       label: 'Packs to Order',
       sortable: true,
       accessor: (r) => (r.signed !== null ? Number(r.signed) : null),
-      render: (r) => <span className="font-semibold">{r.signed !== null ? formatQty(r.signed, 4) : '—'}</span>,
+      render: (r) => (
+        <span
+          className={r.signed !== null && Number(r.signed) > 0 ? 'font-semibold text-danger' : 'font-semibold'}
+          title={r.signed !== null ? explainSignedPacksToOrder({ value: r.signed, flagged: false }) : 'Not matched — cannot be computed.'}
+        >
+          {r.signed !== null ? formatQty(r.signed, 4) : '—'}
+        </span>
+      ),
     },
     {
       key: 'ppu340b',
@@ -695,7 +718,9 @@ function ReplenishmentTab({
                     <tr key={r.ndc} className={i % 2 ? 'bg-surface-alt' : 'bg-white'}>
                       <td className="whitespace-nowrap px-4 py-2.5">{r.productName}</td>
                       <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs">{r.ndc}</td>
-                      <td className="whitespace-nowrap px-4 py-2.5 font-semibold text-danger">{formatQty(r.recommendedPacks)}</td>
+                      <td className="whitespace-nowrap px-4 py-2.5 font-semibold text-danger" title={explainRecommendedPacks(r.recommendedPacks)}>
+                        {formatQty(r.recommendedPacks)}
+                      </td>
                       <td className="whitespace-nowrap px-4 py-2.5">{r.price340b !== null && r.price340b !== undefined ? formatCurrency(r.price340b) : '—'}</td>
                       <td className="whitespace-nowrap px-4 py-2.5 font-semibold">{r.totalOrderCost !== null ? formatCurrency(r.totalOrderCost) : '—'}</td>
                       <td className="whitespace-nowrap px-4 py-2.5">

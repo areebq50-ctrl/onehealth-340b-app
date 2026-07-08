@@ -21,6 +21,7 @@ import { parseCardinalHealthInvoice } from '../parsers/cardinalHealthInvoicePars
 import { exportAccumulator } from '../lib/excelExport.js';
 import { formatCurrency, formatQty, packsOnHand, costOnHand340b, Decimal } from '../lib/calculations.js';
 import { buildDailySnapshot } from '../lib/ledger.js';
+import { explainOnHand, explainPacksOnHand, explainCostOnHand, explainDispensed, explainOrderReceived, explainSignedPacksToOrder } from '../lib/signExplain.js';
 import { normalizeNdc } from '../lib/ndc.js';
 import { getExpiryTone, EXPIRY_TONE_CLASSES } from '../components/accumulator/expiry.js';
 import NdcLedgerModal from '../components/accumulator/NdcLedgerModal.jsx';
@@ -247,8 +248,31 @@ export default function Accumulator() {
       { key: 'product_name', label: 'Product Name', sortable: true },
       ...(isAllPharmacies ? [{ key: 'pharmacyName', label: 'Pharmacy', sortable: true }] : []),
       { key: 'pack_size', label: 'Pack Size', sortable: true, accessor: (r) => Number(r.pack_size ?? 0) },
-      { key: 'qty_on_hand', label: 'Qty on Hand', sortable: true, accessor: (r) => Number(r.qty_on_hand ?? 0), render: (r) => formatQty(r.qty_on_hand) },
-      { key: 'packs_on_hand', label: 'Packs on Hand', sortable: true, accessor: (r) => Number(r.packs_on_hand ?? 0), render: (r) => (r.packs_on_hand !== null ? formatQty(r.packs_on_hand) : '—') },
+      {
+        key: 'qty_on_hand',
+        label: 'Qty on Hand',
+        sortable: true,
+        accessor: (r) => Number(r.qty_on_hand ?? 0),
+        render: (r) => (
+          <span className={Number(r.qty_on_hand) < 0 ? 'text-danger' : ''} title={explainOnHand(r.qty_on_hand)}>
+            {formatQty(r.qty_on_hand)}
+          </span>
+        ),
+      },
+      {
+        key: 'packs_on_hand',
+        label: 'Packs on Hand',
+        sortable: true,
+        accessor: (r) => Number(r.packs_on_hand ?? 0),
+        render: (r) =>
+          r.packs_on_hand !== null ? (
+            <span className={Number(r.packs_on_hand) < 0 ? 'text-danger' : ''} title={explainPacksOnHand(r.packs_on_hand, r.qty_on_hand)}>
+              {formatQty(r.packs_on_hand)}
+            </span>
+          ) : (
+            '—'
+          ),
+      },
       {
         key: 'exp_day',
         label: 'Exp Day',
@@ -260,7 +284,17 @@ export default function Accumulator() {
       },
       { key: 'price_340b', label: '340B Price', sortable: true, accessor: (r) => Number(r.price_340b ?? 0), render: (r) => formatCurrency(r.price_340b) },
       { key: 'ppu_340b', label: '340B PPU', sortable: true, accessor: (r) => Number(r.ppu_340b ?? 0), render: (r) => formatCurrency(r.ppu_340b) },
-      { key: 'cost_on_hand_340b', label: '340B Cost on Hand', sortable: true, accessor: (r) => Number(r.cost_on_hand_340b ?? 0), render: (r) => formatCurrency(r.cost_on_hand_340b) },
+      {
+        key: 'cost_on_hand_340b',
+        label: '340B Cost on Hand',
+        sortable: true,
+        accessor: (r) => Number(r.cost_on_hand_340b ?? 0),
+        render: (r) => (
+          <span className={Number(r.cost_on_hand_340b) < 0 ? 'text-danger' : ''} title={explainCostOnHand(r.cost_on_hand_340b)}>
+            {formatCurrency(r.cost_on_hand_340b)}
+          </span>
+        ),
+      },
       { key: 'cin', label: 'CIN', sortable: true },
       { key: 'manufacturer', label: 'Manufacturer', sortable: true },
       ...(canWrite && isLatestPeriod
@@ -329,35 +363,67 @@ export default function Accumulator() {
         label: 'Starting Balance',
         sortable: true,
         accessor: (r) => Number(r.startingBalance ?? 0),
-        render: (r) => formatQty(r.startingBalance),
+        render: (r) => (
+          <span className={Number(r.startingBalance) < 0 ? 'text-danger' : ''} title={explainOnHand(r.startingBalance)}>
+            {formatQty(r.startingBalance)}
+          </span>
+        ),
       },
       {
         key: 'dispensed',
         label: 'Dispensed',
         sortable: true,
         accessor: (r) => Number(r.dispensed ?? 0),
-        render: (r) => (r.dispensed > 0 ? <span className="text-danger">-{formatQty(r.dispensed)}</span> : '—'),
+        render: (r) =>
+          r.dispensed > 0 ? (
+            <span className="text-danger" title={explainDispensed(r.dispensed)}>
+              -{formatQty(r.dispensed)}
+            </span>
+          ) : (
+            '—'
+          ),
       },
       {
         key: 'ordered',
         label: 'Order Received',
         sortable: true,
         accessor: (r) => Number(r.ordered ?? 0),
-        render: (r) => (r.ordered > 0 ? <span className="text-success">+{formatQty(r.ordered)}</span> : '—'),
+        render: (r) =>
+          r.ordered > 0 ? (
+            <span className="text-success" title={explainOrderReceived(r.ordered)}>
+              +{formatQty(r.ordered)}
+            </span>
+          ) : (
+            '—'
+          ),
       },
       {
         key: 'endingBalance',
         label: 'Ending Balance',
         sortable: true,
         accessor: (r) => Number(r.endingBalance ?? 0),
-        render: (r) => <span className={Number(r.endingBalance) < 0 ? 'font-semibold text-danger' : 'font-semibold'}>{formatQty(r.endingBalance)}</span>,
+        render: (r) => (
+          <span
+            className={Number(r.endingBalance) < 0 ? 'font-semibold text-danger' : 'font-semibold'}
+            title={explainOnHand(r.endingBalance)}
+          >
+            {formatQty(r.endingBalance)}
+          </span>
+        ),
       },
       {
         key: 'packsToOrder',
         label: 'Packs to Order',
         sortable: true,
         accessor: (r) => (r.packsToOrder?.flagged ? 0 : Number(r.packsToOrder?.value ?? 0)),
-        render: (r) => (r.packsToOrder?.flagged ? '—' : formatQty(r.packsToOrder.value, 4)),
+        render: (r) =>
+          r.packsToOrder?.flagged ? (
+            '—'
+          ) : (
+            <span className={Number(r.packsToOrder.value) > 0 ? 'text-danger' : ''} title={explainSignedPacksToOrder(r.packsToOrder)}>
+              {formatQty(r.packsToOrder.value, 4)}
+            </span>
+          ),
       },
       {
         key: 'exp_day',

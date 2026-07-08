@@ -5,6 +5,7 @@ import EmptyState from '../common/EmptyState.jsx';
 import { fetchNdcAuditHistory } from '../../lib/accumulatorApi.js';
 import { formatCurrency, formatQty } from '../../lib/calculations.js';
 import { groupAuditEntriesByDay } from '../../lib/ledger.js';
+import { explainOnHand, explainDispensed, explainOrderReceived, explainSignedPacksToOrder } from '../../lib/signExplain.js';
 import { useToast } from '../../context/ToastContext.jsx';
 
 /**
@@ -56,7 +57,10 @@ export default function NdcLedgerModal({ open, onClose, row, facilityId, pharmac
             Pack Size: <strong>{formatQty(row.pack_size)}</strong>
           </span>
           <span>
-            Current Balance: <strong className={Number(row.qty_on_hand) < 0 ? 'text-danger' : ''}>{formatQty(row.qty_on_hand)}</strong>
+            Current Balance:{' '}
+            <strong className={Number(row.qty_on_hand) < 0 ? 'text-danger' : ''} title={explainOnHand(row.qty_on_hand)}>
+              {formatQty(row.qty_on_hand)}
+            </strong>
           </span>
           <span className="text-gray-500">One row per day this period, same as your own tracking sheet.</span>
         </div>
@@ -88,13 +92,41 @@ export default function NdcLedgerModal({ open, onClose, row, facilityId, pharmac
                         <span className="ml-2 badge bg-gray-100 text-gray-500">{d.otherEvents.join(', ')}</span>
                       )}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-2.5">{formatQty(d.startingBalance)}</td>
-                    <td className="whitespace-nowrap px-4 py-2.5">{d.dispensed > 0 ? <span className="text-danger">-{formatQty(d.dispensed)}</span> : '—'}</td>
-                    <td className="whitespace-nowrap px-4 py-2.5">{d.ordered > 0 ? <span className="text-success">+{formatQty(d.ordered)}</span> : '—'}</td>
-                    <td className="whitespace-nowrap px-4 py-2.5 font-semibold">
-                      <span className={Number(d.endingBalance) < 0 ? 'text-danger' : ''}>{formatQty(d.endingBalance)}</span>
+                    <td className="whitespace-nowrap px-4 py-2.5" title={explainOnHand(d.startingBalance)}>
+                      {formatQty(d.startingBalance)}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-2.5">{d.packsToOrder.flagged ? '—' : formatQty(d.packsToOrder.value, 4)}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5">
+                      {d.dispensed > 0 ? (
+                        <span className="text-danger" title={explainDispensed(d.dispensed)}>
+                          -{formatQty(d.dispensed)}
+                        </span>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-2.5">
+                      {d.ordered > 0 ? (
+                        <span className="text-success" title={explainOrderReceived(d.ordered)}>
+                          +{formatQty(d.ordered)}
+                        </span>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-2.5 font-semibold">
+                      <span className={Number(d.endingBalance) < 0 ? 'text-danger' : ''} title={explainOnHand(d.endingBalance)}>
+                        {formatQty(d.endingBalance)}
+                      </span>
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-2.5">
+                      {d.packsToOrder.flagged ? (
+                        '—'
+                      ) : (
+                        <span className={Number(d.packsToOrder.value) > 0 ? 'text-danger' : ''} title={explainSignedPacksToOrder(d.packsToOrder)}>
+                          {formatQty(d.packsToOrder.value, 4)}
+                        </span>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
