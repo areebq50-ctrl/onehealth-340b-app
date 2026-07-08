@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Download, Plus, Upload, FileText, CalendarRange, Loader2, Lock, Pencil, Trash2, AlertTriangle } from 'lucide-react';
+import { Download, Plus, Upload, FileText, CalendarRange, Loader2, Lock, Pencil, Trash2, AlertTriangle, ScrollText } from 'lucide-react';
 import { useFacility } from '../context/FacilityContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
@@ -21,6 +21,7 @@ import { exportAccumulator } from '../lib/excelExport.js';
 import { formatCurrency, formatQty, packsOnHand, costOnHand340b, Decimal } from '../lib/calculations.js';
 import { normalizeNdc } from '../lib/ndc.js';
 import { getExpiryTone, EXPIRY_TONE_CLASSES } from '../components/accumulator/expiry.js';
+import NdcLedgerModal from '../components/accumulator/NdcLedgerModal.jsx';
 import DataTable from '../components/common/DataTable.jsx';
 import Modal from '../components/common/Modal.jsx';
 import { SkeletonTable } from '../components/common/Skeleton.jsx';
@@ -121,6 +122,7 @@ export default function Accumulator() {
 
   const [editingRow, setEditingRow] = useState(null);
   const [savingEdit, setSavingEdit] = useState(false);
+  const [ledgerRow, setLedgerRow] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [rolloverOpen, setRolloverOpen] = useState(false);
@@ -193,6 +195,15 @@ export default function Accumulator() {
       { key: 'cost_on_hand_340b', label: '340B Cost on Hand', sortable: true, accessor: (r) => Number(r.cost_on_hand_340b ?? 0), render: (r) => formatCurrency(r.cost_on_hand_340b) },
       { key: 'cin', label: 'CIN', sortable: true },
       { key: 'manufacturer', label: 'Manufacturer', sortable: true },
+      {
+        key: 'history',
+        label: 'History',
+        render: (r) => (
+          <button className="btn-secondary px-2 py-1" title="View running ledger for this NDC" onClick={() => setLedgerRow(r)}>
+            <ScrollText className="h-3.5 w-3.5" />
+          </button>
+        ),
+      },
       ...(canWrite && isLatestPeriod
         ? [
             {
@@ -475,6 +486,16 @@ export default function Accumulator() {
           <EditRowForm row={editingRow} onSave={handleSaveEdit} onDelete={handleDeleteRow} onCancel={() => setEditingRow(null)} saving={savingEdit} />
         )}
       </Modal>
+
+      <NdcLedgerModal
+        open={Boolean(ledgerRow)}
+        onClose={() => setLedgerRow(null)}
+        row={ledgerRow}
+        facilityId={ledgerRow?.facility_id}
+        pharmacyId={ledgerRow?.pharmacy_id}
+        month={ledgerRow?.month}
+        year={ledgerRow?.year}
+      />
 
       <AddNdcModal
         open={addOpen}

@@ -204,3 +204,27 @@ export async function importAccumulatorRows({ facilityId, pharmacyId, month, yea
   if (error) throw error;
   return data;
 }
+
+/**
+ * Every accumulator_audit_log entry for one NDC across a whole period —
+ * the running, day-by-day ledger view (matching a spreadsheet's "one
+ * updated sheet per revision through the month" pattern) as opposed to
+ * fetchAuditLogByClaim's single-claim slice. Pulled straight from the
+ * insert-only audit trail, so it's the true chronological record, not a
+ * reconstruction.
+ */
+export async function fetchNdcAuditHistory(facilityId, pharmacyId, ndc, month, year) {
+  const from = `${year}-${String(month).padStart(2, '0')}-01`;
+  const toDate = month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, '0')}-01`;
+  const { data, error } = await supabase
+    .from('accumulator_audit_log')
+    .select('*, users(email)')
+    .eq('facility_id', facilityId)
+    .eq('pharmacy_id', pharmacyId)
+    .eq('ndc', ndc)
+    .gte('timestamp', from)
+    .lt('timestamp', toDate)
+    .order('timestamp');
+  if (error) throw error;
+  return (data ?? []).map((r) => ({ ...r, userEmail: r.users?.email ?? r.user_id }));
+}
