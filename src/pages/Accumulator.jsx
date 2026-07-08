@@ -190,7 +190,7 @@ export default function Accumulator() {
       },
       { key: 'price_340b', label: '340B Price', sortable: true, accessor: (r) => Number(r.price_340b ?? 0), render: (r) => formatCurrency(r.price_340b) },
       { key: 'ppu_340b', label: '340B PPU', sortable: true, accessor: (r) => Number(r.ppu_340b ?? 0), render: (r) => formatCurrency(r.ppu_340b) },
-      { key: 'cost_on_hand_340b', label: 'Cost on Hand', sortable: true, accessor: (r) => Number(r.cost_on_hand_340b ?? 0), render: (r) => formatCurrency(r.cost_on_hand_340b) },
+      { key: 'cost_on_hand_340b', label: '340B Cost on Hand', sortable: true, accessor: (r) => Number(r.cost_on_hand_340b ?? 0), render: (r) => formatCurrency(r.cost_on_hand_340b) },
       { key: 'cin', label: 'CIN', sortable: true },
       { key: 'manufacturer', label: 'Manufacturer', sortable: true },
       ...(canWrite && isLatestPeriod

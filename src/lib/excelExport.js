@@ -105,7 +105,7 @@ export function exportAccumulator(monthsData, { facilityName, pharmacyLabel } = 
       'Exp Day': r.exp_day,
       '340B Price': money(r.price_340b),
       '340B PPU': money(r.ppu_340b),
-      'Cost on Hand (340B)': money(r.cost_on_hand_340b),
+      '340B Cost on Hand': money(r.cost_on_hand_340b),
       CIN: r.cin,
       Manufacturer: r.manufacturer,
     }));
