@@ -175,6 +175,15 @@ export default function Accumulator() {
 
   const columns = useMemo(
     () => [
+      {
+        key: 'history',
+        label: 'History',
+        render: (r) => (
+          <button className="btn-secondary px-2 py-1" title="View running ledger for this NDC" onClick={() => setLedgerRow(r)}>
+            <ScrollText className="h-3.5 w-3.5" />
+          </button>
+        ),
+      },
       { key: 'ndc', label: 'NDC', sortable: true, render: (r) => <span className="font-mono text-xs">{r.ndc}</span> },
       { key: 'product_name', label: 'Product Name', sortable: true },
       ...(isAllPharmacies ? [{ key: 'pharmacyName', label: 'Pharmacy', sortable: true }] : []),
@@ -195,15 +204,6 @@ export default function Accumulator() {
       { key: 'cost_on_hand_340b', label: '340B Cost on Hand', sortable: true, accessor: (r) => Number(r.cost_on_hand_340b ?? 0), render: (r) => formatCurrency(r.cost_on_hand_340b) },
       { key: 'cin', label: 'CIN', sortable: true },
       { key: 'manufacturer', label: 'Manufacturer', sortable: true },
-      {
-        key: 'history',
-        label: 'History',
-        render: (r) => (
-          <button className="btn-secondary px-2 py-1" title="View running ledger for this NDC" onClick={() => setLedgerRow(r)}>
-            <ScrollText className="h-3.5 w-3.5" />
-          </button>
-        ),
-      },
       ...(canWrite && isLatestPeriod
         ? [
             {
