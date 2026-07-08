@@ -1088,6 +1088,12 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
                 </span>
               </label>
             </div>
+            <p className="mt-2 border-t border-teal-200 pt-2 text-xs text-teal-700">
+              This choice only affects how <em>this import</em> is read in. Once imported, every row is stored as a plain positive
+              on-hand count and the app always uses the same rule everywhere from then on: a claim subtracts, an order received
+              adds. It never keeps treating anything as &quot;negative = surplus&quot; after today — that translation happens once,
+              right here.
+            </p>
           </div>
           {negativeRows.length > 0 && (
             <div className="mb-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-danger">
