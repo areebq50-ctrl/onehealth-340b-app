@@ -15,15 +15,19 @@ const COLUMN_ALIASES = {
 
 // Two DIFFERENT sign conventions show up in real pharmacy spreadsheets for
 // "how much of this drug is on hand":
-//   - Raw physical count columns ("Qty on Hand") — positive = units you
-//     actually have. This is what accumulator.qty_on_hand stores.
+//   - Raw physical count columns — positive = units you actually have. This
+//     is what accumulator.qty_on_hand stores.
 //   - Running-ledger "New Balance" columns, which track a deficit/surplus
-//     figure where NEGATIVE means surplus/over-replenished (confirmed
-//     against a real reference workbook's own formulas: dispensing is
+//     figure where NEGATIVE means surplus/over-replenished (dispensing is
 //     ADDED to New Balance, the opposite of the raw-count convention,
 //     because New Balance is the negation of the raw physical count).
-// Importing a "New Balance" value as-is into qty_on_hand silently flips
-// every future calculation's sign, so it's negated on the way in instead.
+// The column HEADER TEXT is only a hint, not proof, of which convention a
+// given file uses — two real source files have used the exact same header
+// wording ("Qty on Hand") for opposite conventions. So this module no
+// longer silently negates based on the header match: it only supplies a
+// best-guess default (qtyOnHandSuggestNegate) and the raw, un-negated
+// value per row; the importing UI must show the admin which convention was
+// guessed and let them confirm or flip it before anything is negated.
 const QTY_ON_HAND_RAW_ALIASES = ['qty on hand', 'quantity on hand', 'qty', 'on hand'];
 const NEW_BALANCE_ALIASES = ['new balance'];
 
@@ -142,28 +146,27 @@ export function parseAccumulatorSheet(workbook, sheetName) {
       continue;
     }
 
-    const qtyOnHandRaw = row[colIndex.qtyOnHand];
-    let qtyOnHand = toDecimal(qtyOnHandRaw);
-    if (qtyOnHand === null) {
-      skippedRows.push({ rowNumber, reason: `Invalid Qty on Hand "${qtyOnHandRaw}"` });
+    const qtyOnHandCell = row[colIndex.qtyOnHand];
+    const qtyOnHandParsed = toDecimal(qtyOnHandCell);
+    if (qtyOnHandParsed === null) {
+      skippedRows.push({ rowNumber, reason: `Invalid Qty on Hand "${qtyOnHandCell}"` });
       continue;
     }
-    if (qtyOnHandIsNegated) qtyOnHand = qtyOnHand.negated();
 
     rows.push({
       ndc,
       productName: String(row[colIndex.productName] ?? '').trim() || '(unnamed)',
       packSize: colIndex.packSize >= 0 ? toDecimal(row[colIndex.packSize])?.toString() ?? null : null,
-      qtyOnHand: qtyOnHand.toString(),
-      // A TRUE starting balance is a physical count and should essentially
-      // never be negative — a negative qty_on_hand only ever makes sense as
-      // a DERIVED "new balance" after dispensing exceeds supply, never as an
-      // imported starting figure. Flagged (not excluded) so the import
-      // preview can surface it instead of silently importing a sign error.
-      // Decimal.js preserves a sign bit on negated zero ("-0"), so
-      // isNegative() alone would misflag every zero-balance row that went
-      // through the New Balance negation path above — exclude exact zero.
-      negativeQty: qtyOnHand.isNegative() && !qtyOnHand.isZero(),
+      // Deliberately NOT negated here, and no "negativeQty" flag computed
+      // here either. Column NAME alone ("Qty on Hand" vs "New Balance") is
+      // not a reliable signal of sign convention — two source files can use
+      // the identical header text for opposite meanings (confirmed by a
+      // real user file where a column matching the "raw" aliases actually
+      // used the deficit/surplus convention). The caller (ImportModal) asks
+      // the admin to confirm the convention explicitly — using
+      // qtyOnHandSuggestNegate only as the pre-selected default — and
+      // negates (or not) client-side from this raw value accordingly.
+      qtyOnHandRaw: qtyOnHandParsed.toString(),
       expDay: colIndex.expDay >= 0 ? normalizeExcelDateCell(row[colIndex.expDay]) : null,
       price340b: colIndex.price340b >= 0 ? toDecimal(row[colIndex.price340b])?.toString() ?? null : null,
       ppu340b: colIndex.ppu340b >= 0 ? toDecimal(row[colIndex.ppu340b])?.toString() ?? null : null,
@@ -180,7 +183,11 @@ export function parseAccumulatorSheet(workbook, sheetName) {
     error: null,
     rows,
     skippedRows,
-    qtyOnHandIsNegated,
+    // Best-effort DEFAULT for the convention toggle — a raw "Qty on Hand"
+    // -like header suggests unchecked (physical count), a "New Balance"
+    // -like header (with no raw column present) suggests checked (negate).
+    // Always admin-overridable in the UI, never applied silently.
+    qtyOnHandSuggestNegate: qtyOnHandIsNegated,
     qtyOnHandColumnLabel: String(headerRow[colIndex.qtyOnHand] ?? '').trim(),
   };
 }

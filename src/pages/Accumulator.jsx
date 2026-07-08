@@ -903,6 +903,11 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
   const [month, setMonth] = useState(period?.month ?? now.getMonth() + 1);
   const [year, setYear] = useState(period?.year ?? now.getFullYear());
   const [acknowledgedNegatives, setAcknowledgedNegatives] = useState(false);
+  // Whether to negate the parsed column on the way in. Column NAME alone
+  // isn't proof of sign convention (two real files have used the same
+  // header for opposite meanings), so this always starts from the parser's
+  // best-guess default but the admin can flip it after seeing the preview.
+  const [negateConvention, setNegateConvention] = useState(false);
 
   async function handleFile(e) {
     const file = e.target.files?.[0];
@@ -941,6 +946,7 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
     } else {
       setError(null);
       setParsed(result);
+      setNegateConvention(result.qtyOnHandSuggestNegate);
     }
   }
 
@@ -950,7 +956,19 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
     if (workbook) runParse(workbook, sheetName);
   }
 
-  const negativeRows = parsed?.rows.filter((r) => r.negativeQty) ?? [];
+  // Final qty_on_hand per row, applying the admin-confirmed (or -flipped)
+  // sign convention to the parser's raw, un-negated value — recomputed
+  // instantly on toggle, no re-parse needed.
+  const displayRows = useMemo(() => {
+    if (!parsed) return [];
+    return parsed.rows.map((r) => {
+      const raw = new Decimal(r.qtyOnHandRaw);
+      const qty = negateConvention ? raw.negated() : raw;
+      return { ...r, qtyOnHand: qty.toString(), negativeQty: qty.isNegative() && !qty.isZero() };
+    });
+  }, [parsed, negateConvention]);
+
+  const negativeRows = displayRows.filter((r) => r.negativeQty);
 
   async function handleConfirm() {
     setImporting(true);
@@ -960,7 +978,7 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
         pharmacyId,
         month,
         year,
-        rows: parsed.rows.map((r) => ({
+        rows: displayRows.map((r) => ({
           ndc: r.ndc,
           product_name: r.productName,
           pack_size: r.packSize,
@@ -1047,14 +1065,30 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
             {parsed.rows.length} valid rows parsed{parsed.skippedRows.length > 0 ? `, ${parsed.skippedRows.length} skipped` : ''} from sheet
             &quot;{selectedSheet}&quot;. Review before confirming — this will upsert into {MONTH_NAMES[month - 1]} {year} for this pharmacy.
           </p>
-          {parsed.qtyOnHandIsNegated && (
-            <div className="mb-3 rounded-lg border border-teal-100 bg-teal-50 p-3 text-sm text-teal-800">
-              No raw &quot;Qty on Hand&quot; column was found, so this file&apos;s &quot;{parsed.qtyOnHandColumnLabel}&quot; column was
-              used instead and automatically sign-flipped on import — that column tracks a deficit/surplus figure (negative =
-              surplus) rather than a raw physical count, so its values are negated here to match the app&apos;s convention (positive =
-              units on hand). Double-check a few rows below against what you know is physically on the shelf before confirming.
+          <div className="mb-3 rounded-lg border border-teal-100 bg-teal-50 p-3 text-sm text-teal-800">
+            <p className="font-semibold">
+              This file&apos;s &quot;{parsed.qtyOnHandColumnLabel}&quot; column — what does a NEGATIVE value mean?
+            </p>
+            <p className="mt-1 text-teal-700">
+              The column name alone can&apos;t tell us this — the same header wording has meant opposite things in different files.
+              Check a row you know the real answer for below, then pick the one that matches.
+            </p>
+            <div className="mt-2 space-y-1.5">
+              <label className="flex items-start gap-2">
+                <input type="radio" className="mt-1" checked={!negateConvention} onChange={() => setNegateConvention(false)} />
+                <span>
+                  <strong>Physical count</strong> — negative means a real shortage/backorder. Import values as-is.
+                </span>
+              </label>
+              <label className="flex items-start gap-2">
+                <input type="radio" className="mt-1" checked={negateConvention} onChange={() => setNegateConvention(true)} />
+                <span>
+                  <strong>Running-ledger balance</strong> — negative means surplus/over-replenished (what you already have), positive
+                  means a shortage. Sign-flip on import to match the app&apos;s physical-count convention.
+                </span>
+              </label>
             </div>
-          )}
+          </div>
           {negativeRows.length > 0 && (
             <div className="mb-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-danger">
               <p className="font-semibold">
@@ -1082,7 +1116,7 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
                 </tr>
               </thead>
               <tbody>
-                {parsed.rows.slice(0, 50).map((r, i) => (
+                {displayRows.slice(0, 50).map((r, i) => (
                   <tr key={i} className={`${i % 2 ? 'bg-surface-alt' : 'bg-white'} ${r.negativeQty ? 'bg-red-50/60' : ''}`}>
                     <td className="px-3 py-1.5 font-mono">{r.ndc}</td>
                     <td className="px-3 py-1.5">{r.productName}</td>
