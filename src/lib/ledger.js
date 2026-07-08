@@ -17,8 +17,11 @@ export function groupAuditEntriesByDay(entries, packSize) {
     }
     const day = days.get(dateKey);
     const change = Number(e.new_qty ?? 0) - Number(e.prior_qty ?? 0);
-    if (e.action_type === 'claim_dispense') day.dispensed += -change; // change is negative for a dispense
-    else if (e.action_type === 'order_received') day.ordered += change;
+    // Deficit-framed convention: a dispense ADDS (change is positive), an
+    // order received SUBTRACTS (change is negative) — the opposite of a
+    // raw physical-count ledger.
+    if (e.action_type === 'claim_dispense') day.dispensed += change;
+    else if (e.action_type === 'order_received') day.ordered += -change;
     else day.otherEvents.push(e.action_type);
     day.endingBalance = e.new_qty;
   }

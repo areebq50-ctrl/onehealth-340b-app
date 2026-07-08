@@ -16,6 +16,7 @@ import {
   computeFileHash,
 } from '../lib/claimsApi.js';
 import { packsDispensed, reimbursementOwed, newQtyOnHand, formatCurrency, formatQty, sumQty, Decimal } from '../lib/calculations.js';
+import { explainOnHand } from '../lib/signExplain.js';
 import { normalizeNdc } from '../lib/ndc.js';
 import FacilityPharmacySelector from '../components/common/FacilityPharmacySelector.jsx';
 import Modal from '../components/common/Modal.jsx';
@@ -674,7 +675,9 @@ function DateBatchCard({ dateStr, rows, skippedRowsCount, facilityId, pharmacyId
         reimbursement: reimb,
         qtyBefore: acc.qty_on_hand,
         qtyAfter: onHand.value,
-        isNegative: onHand.isNegative,
+        // isShortage: positive balance = a shortage under the app's
+        // deficit-framed convention (negative = surplus, positive = short).
+        isShortage: onHand.isPositive,
       };
     });
   }, [matchedRows]);
@@ -857,7 +860,7 @@ function DateBatchCard({ dateStr, rows, skippedRowsCount, facilityId, pharmacyId
                   {calcRows
                     .filter((r) => r.matched)
                     .map((r, i) => (
-                      <tr key={r.ndc} className={`${i % 2 ? 'bg-surface-alt' : 'bg-white'} ${r.isNegative ? 'bg-red-50' : ''}`}>
+                      <tr key={r.ndc} className={`${i % 2 ? 'bg-surface-alt' : 'bg-white'} ${r.isShortage ? 'bg-red-50' : ''}`}>
                         <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs">{r.ndc}</td>
                         <td className="whitespace-nowrap px-4 py-2.5">{r.productName}</td>
                         <td className="whitespace-nowrap px-4 py-2.5">{formatQty(r.totalQty)}</td>
@@ -871,10 +874,15 @@ function DateBatchCard({ dateStr, rows, skippedRowsCount, facilityId, pharmacyId
                         </td>
                         <td className="whitespace-nowrap px-4 py-2.5">{formatCurrency(r.ppu)}</td>
                         <td className="whitespace-nowrap px-4 py-2.5 font-semibold">{formatCurrency(r.reimbursement)}</td>
-                        <td className="whitespace-nowrap px-4 py-2.5">{formatQty(r.qtyBefore)}</td>
+                        <td className="whitespace-nowrap px-4 py-2.5" title={explainOnHand(r.qtyBefore)}>
+                          {formatQty(r.qtyBefore)}
+                        </td>
                         <td className="whitespace-nowrap px-4 py-2.5">
-                          <span className={r.isNegative ? 'inline-flex items-center gap-1 font-semibold text-danger' : ''}>
-                            {r.isNegative && <AlertTriangle className="h-3.5 w-3.5" />}
+                          <span
+                            className={r.isShortage ? 'inline-flex items-center gap-1 font-semibold text-danger' : ''}
+                            title={explainOnHand(r.qtyAfter)}
+                          >
+                            {r.isShortage && <AlertTriangle className="h-3.5 w-3.5" />}
                             {formatQty(r.qtyAfter)}
                           </span>
                         </td>

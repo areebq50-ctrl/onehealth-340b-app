@@ -15,16 +15,18 @@ const COLUMN_ALIASES = {
 
 // Two DIFFERENT sign conventions show up in real pharmacy spreadsheets for
 // "how much of this drug is on hand":
-//   - Raw physical count columns — positive = units you actually have. This
-//     is what accumulator.qty_on_hand stores.
+//   - Raw physical count columns — positive = units you actually have.
 //   - Running-ledger "New Balance" columns, which track a deficit/surplus
 //     figure where NEGATIVE means surplus/over-replenished (dispensing is
-//     ADDED to New Balance, the opposite of the raw-count convention,
-//     because New Balance is the negation of the raw physical count).
+//     ADDED to New Balance, the opposite of the raw-count convention).
+// accumulator.qty_on_hand is deficit-framed (negative = surplus, positive =
+// shortage) — the SAME convention as a "New Balance" column, not a raw
+// physical count. So a raw physical-count-style column needs negating on
+// import to match; a "New Balance"-style column already matches as-is.
 // The column HEADER TEXT is only a hint, not proof, of which convention a
 // given file uses — two real source files have used the exact same header
-// wording ("Qty on Hand") for opposite conventions. So this module no
-// longer silently negates based on the header match: it only supplies a
+// wording ("Qty on Hand") for opposite conventions. So this module never
+// silently negates based on the header match: it only supplies a
 // best-guess default (qtyOnHandSuggestNegate) and the raw, un-negated
 // value per row; the importing UI must show the admin which convention was
 // guessed and let them confirm or flip it before anything is negated.
@@ -114,10 +116,12 @@ export function parseAccumulatorSheet(workbook, sheetName) {
   }
 
   // Prefer a raw physical "Qty on Hand" column; only fall back to a
-  // "New Balance" ledger column (negated on read) if no raw column exists.
+  // "New Balance" ledger column if no raw column exists. Since the app's
+  // native convention is deficit-framed (like "New Balance"), a raw
+  // physical-count column is the one that needs negating by default now.
   const rawQtyIdx = findColumnIndex(headerRow, QTY_ON_HAND_RAW_ALIASES);
   const newBalanceIdx = findColumnIndex(headerRow, NEW_BALANCE_ALIASES);
-  const qtyOnHandIsNegated = rawQtyIdx === -1 && newBalanceIdx >= 0;
+  const qtyOnHandSuggestNegate = rawQtyIdx >= 0;
   colIndex.qtyOnHand = rawQtyIdx >= 0 ? rawQtyIdx : newBalanceIdx;
 
   const missingRequired = REQUIRED_FIELDS.filter((f) => colIndex[f] === -1);
@@ -184,10 +188,11 @@ export function parseAccumulatorSheet(workbook, sheetName) {
     rows,
     skippedRows,
     // Best-effort DEFAULT for the convention toggle — a raw "Qty on Hand"
-    // -like header suggests unchecked (physical count), a "New Balance"
-    // -like header (with no raw column present) suggests checked (negate).
-    // Always admin-overridable in the UI, never applied silently.
-    qtyOnHandSuggestNegate: qtyOnHandIsNegated,
+    // -like header suggests negating (to match the app's native deficit-
+    // framed convention), a "New Balance"-like header (with no raw column
+    // present) suggests importing as-is. Always admin-overridable in the
+    // UI, never applied silently.
+    qtyOnHandSuggestNegate,
     qtyOnHandColumnLabel: String(headerRow[colIndex.qtyOnHand] ?? '').trim(),
   };
 }

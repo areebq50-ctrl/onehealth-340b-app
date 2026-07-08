@@ -1203,7 +1203,10 @@ begin
 
       if found then
         v_prior_qty := v_acc.qty_on_hand;
-        v_new_qty := v_prior_qty + v_old_item.qty_dispensed;
+        -- Reversing a previously-applied dispense: dispensing ADDS toward
+        -- shortage under this app's deficit-framed convention (positive =
+        -- shortage, negative = surplus), so undoing it SUBTRACTS.
+        v_new_qty := v_prior_qty - v_old_item.qty_dispensed;
 
         update public.accumulator
         set qty_on_hand = v_new_qty,
@@ -1267,7 +1270,10 @@ begin
 
     v_matched_count := v_matched_count + 1;
     v_prior_qty := v_acc.qty_on_hand;
-    v_new_qty := v_prior_qty - v_qty;
+    -- Deficit-framed convention: dispensing consumes stock, moving the
+    -- balance UP toward positive (shortage). Negative = surplus, positive
+    -- = shortage — the opposite of a raw physical count.
+    v_new_qty := v_prior_qty + v_qty;
     v_reimb := case when v_acc.ppu_340b is not null then round(v_qty * v_acc.ppu_340b, 4) else null end;
     v_packs := case when v_acc.pack_size is not null and v_acc.pack_size <> 0 then v_qty / v_acc.pack_size else null end;
 
@@ -1456,7 +1462,8 @@ begin
        'manual_add', v_claim.facility_id, v_claim.pharmacy_id);
   end if;
 
-  v_new_qty := v_acc.qty_on_hand - v_line.qty_dispensed;
+  -- Deficit-framed convention: dispensing moves the balance toward positive (shortage).
+  v_new_qty := v_acc.qty_on_hand + v_line.qty_dispensed;
   v_reimb := case when v_acc.ppu_340b is not null then round(v_line.qty_dispensed * v_acc.ppu_340b, 4) else null end;
   v_packs := case when v_acc.pack_size is not null and v_acc.pack_size <> 0 then v_line.qty_dispensed / v_acc.pack_size else null end;
 
@@ -1577,7 +1584,9 @@ begin
     raise exception 'This accumulator period is closed (historical) and cannot receive an order';
   end if;
 
-  v_new_qty := v_row.qty_on_hand + p_qty_ordered;
+  -- Deficit-framed convention: an order received replenishes stock, moving
+  -- the balance DOWN toward negative (surplus) — the opposite of dispensing.
+  v_new_qty := v_row.qty_on_hand - p_qty_ordered;
   v_packs := case when v_row.pack_size is not null and v_row.pack_size <> 0 then p_qty_ordered / v_row.pack_size else null end;
   v_cost := case when v_packs is not null and v_row.price_340b is not null then v_packs * v_row.price_340b else null end;
 
@@ -1789,7 +1798,8 @@ begin
 
     if found then
       v_prior_qty := v_acc.qty_on_hand;
-      v_new_qty := v_prior_qty + v_item.qty_dispensed;
+      -- Undoing a dispense (which ADDS under the deficit-framed convention) SUBTRACTS.
+      v_new_qty := v_prior_qty - v_item.qty_dispensed;
 
       update public.accumulator
       set qty_on_hand = v_new_qty,
@@ -1935,7 +1945,8 @@ begin
     end if;
 
     v_unit_cost := nullif(v_line->>'unit_cost', '')::numeric;
-    v_new_qty := v_row.qty_on_hand + v_order_qty;
+    -- Deficit-framed convention: an order received moves the balance DOWN toward negative (surplus).
+    v_new_qty := v_row.qty_on_hand - v_order_qty;
     v_packs := case when v_row.pack_size is not null and v_row.pack_size <> 0 then v_order_qty / v_row.pack_size else null end;
     v_cost := case when v_unit_cost is not null then v_order_qty * v_unit_cost else null end;
     v_order_notes := coalesce(p_notes, '') || case when p_invoice_number is not null then ' (Invoice ' || p_invoice_number || ')' else '' end;

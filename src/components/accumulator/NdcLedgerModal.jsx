@@ -58,7 +58,7 @@ export default function NdcLedgerModal({ open, onClose, row, facilityId, pharmac
           </span>
           <span>
             Current Balance:{' '}
-            <strong className={Number(row.qty_on_hand) < 0 ? 'text-danger' : ''} title={explainOnHand(row.qty_on_hand)}>
+            <strong className={Number(row.qty_on_hand) > 0 ? 'text-danger' : ''} title={explainOnHand(row.qty_on_hand)}>
               {formatQty(row.qty_on_hand)}
             </strong>
           </span>
@@ -98,7 +98,7 @@ export default function NdcLedgerModal({ open, onClose, row, facilityId, pharmac
                     <td className="whitespace-nowrap px-4 py-2.5">
                       {d.dispensed > 0 ? (
                         <span className="text-danger" title={explainDispensed(d.dispensed)}>
-                          -{formatQty(d.dispensed)}
+                          +{formatQty(d.dispensed)}
                         </span>
                       ) : (
                         '—'
@@ -107,14 +107,14 @@ export default function NdcLedgerModal({ open, onClose, row, facilityId, pharmac
                     <td className="whitespace-nowrap px-4 py-2.5">
                       {d.ordered > 0 ? (
                         <span className="text-success" title={explainOrderReceived(d.ordered)}>
-                          +{formatQty(d.ordered)}
+                          -{formatQty(d.ordered)}
                         </span>
                       ) : (
                         '—'
                       )}
                     </td>
                     <td className="whitespace-nowrap px-4 py-2.5 font-semibold">
-                      <span className={Number(d.endingBalance) < 0 ? 'text-danger' : ''} title={explainOnHand(d.endingBalance)}>
+                      <span className={Number(d.endingBalance) > 0 ? 'text-danger' : ''} title={explainOnHand(d.endingBalance)}>
                         {formatQty(d.endingBalance)}
                       </span>
                     </td>

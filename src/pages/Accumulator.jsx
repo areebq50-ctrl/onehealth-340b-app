@@ -45,7 +45,7 @@ function loadStoredFilters() {
   }
 }
 
-const DEFAULT_FILTERS = { expiry: 'all', manufacturer: 'all', negativeOnly: false };
+const DEFAULT_FILTERS = { expiry: 'all', manufacturer: 'all', shortageOnly: false };
 
 function EditRowForm({ row, onSave, onDelete, onCancel, saving }) {
   const [form, setForm] = useState({
@@ -254,7 +254,7 @@ export default function Accumulator() {
         sortable: true,
         accessor: (r) => Number(r.qty_on_hand ?? 0),
         render: (r) => (
-          <span className={Number(r.qty_on_hand) < 0 ? 'text-danger' : ''} title={explainOnHand(r.qty_on_hand)}>
+          <span className={Number(r.qty_on_hand) > 0 ? 'text-danger' : ''} title={explainOnHand(r.qty_on_hand)}>
             {formatQty(r.qty_on_hand)}
           </span>
         ),
@@ -266,7 +266,7 @@ export default function Accumulator() {
         accessor: (r) => Number(r.packs_on_hand ?? 0),
         render: (r) =>
           r.packs_on_hand !== null ? (
-            <span className={Number(r.packs_on_hand) < 0 ? 'text-danger' : ''} title={explainPacksOnHand(r.packs_on_hand, r.qty_on_hand)}>
+            <span className={Number(r.packs_on_hand) > 0 ? 'text-danger' : ''} title={explainPacksOnHand(r.packs_on_hand, r.qty_on_hand)}>
               {formatQty(r.packs_on_hand)}
             </span>
           ) : (
@@ -290,7 +290,7 @@ export default function Accumulator() {
         sortable: true,
         accessor: (r) => Number(r.cost_on_hand_340b ?? 0),
         render: (r) => (
-          <span className={Number(r.cost_on_hand_340b) < 0 ? 'text-danger' : ''} title={explainCostOnHand(r.cost_on_hand_340b)}>
+          <span className={Number(r.cost_on_hand_340b) > 0 ? 'text-danger' : ''} title={explainCostOnHand(r.cost_on_hand_340b)}>
             {formatCurrency(r.cost_on_hand_340b)}
           </span>
         ),
@@ -321,7 +321,7 @@ export default function Accumulator() {
 
   const filteredRows = useMemo(() => {
     return rows.filter((r) => {
-      if (filters.negativeOnly && !(Number(r.qty_on_hand) < 0)) return false;
+      if (filters.shortageOnly && !(Number(r.qty_on_hand) > 0)) return false;
       if (filters.manufacturer !== 'all' && r.manufacturer !== filters.manufacturer) return false;
       if (filters.expiry !== 'all') {
         const { daysUntil } = getExpiryTone(r.exp_day);
@@ -331,7 +331,7 @@ export default function Accumulator() {
     });
   }, [rows, filters]);
 
-  // Same expiry/manufacturer filters as the master view, but negativeOnly is
+  // Same expiry/manufacturer filters as the master view, but shortageOnly is
   // applied after the snapshot below (against that day's Ending Balance,
   // not the row's current qty_on_hand) since the whole point of this view is
   // seeing what the balance was on a specific day, not today.
@@ -349,8 +349,8 @@ export default function Accumulator() {
   const dailyRows = useMemo(() => {
     if (!selectedDate) return [];
     const snapshot = buildDailySnapshot(dailyBaseRows, entriesByNdc, selectedDate);
-    return filters.negativeOnly ? snapshot.filter((r) => Number(r.endingBalance) < 0) : snapshot;
-  }, [dailyBaseRows, entriesByNdc, selectedDate, filters.negativeOnly]);
+    return filters.shortageOnly ? snapshot.filter((r) => Number(r.endingBalance) > 0) : snapshot;
+  }, [dailyBaseRows, entriesByNdc, selectedDate, filters.shortageOnly]);
 
   const dailyColumns = useMemo(
     () => [
@@ -364,7 +364,7 @@ export default function Accumulator() {
         sortable: true,
         accessor: (r) => Number(r.startingBalance ?? 0),
         render: (r) => (
-          <span className={Number(r.startingBalance) < 0 ? 'text-danger' : ''} title={explainOnHand(r.startingBalance)}>
+          <span className={Number(r.startingBalance) > 0 ? 'text-danger' : ''} title={explainOnHand(r.startingBalance)}>
             {formatQty(r.startingBalance)}
           </span>
         ),
@@ -377,7 +377,7 @@ export default function Accumulator() {
         render: (r) =>
           r.dispensed > 0 ? (
             <span className="text-danger" title={explainDispensed(r.dispensed)}>
-              -{formatQty(r.dispensed)}
+              +{formatQty(r.dispensed)}
             </span>
           ) : (
             '—'
@@ -391,7 +391,7 @@ export default function Accumulator() {
         render: (r) =>
           r.ordered > 0 ? (
             <span className="text-success" title={explainOrderReceived(r.ordered)}>
-              +{formatQty(r.ordered)}
+              -{formatQty(r.ordered)}
             </span>
           ) : (
             '—'
@@ -404,7 +404,7 @@ export default function Accumulator() {
         accessor: (r) => Number(r.endingBalance ?? 0),
         render: (r) => (
           <span
-            className={Number(r.endingBalance) < 0 ? 'font-semibold text-danger' : 'font-semibold'}
+            className={Number(r.endingBalance) > 0 ? 'font-semibold text-danger' : 'font-semibold'}
             title={explainOnHand(r.endingBalance)}
           >
             {formatQty(r.endingBalance)}
@@ -687,12 +687,12 @@ export default function Accumulator() {
           <label className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-600">
             <input
               type="checkbox"
-              checked={filters.negativeOnly}
-              onChange={(e) => setFilters((f) => ({ ...f, negativeOnly: e.target.checked }))}
+              checked={filters.shortageOnly}
+              onChange={(e) => setFilters((f) => ({ ...f, shortageOnly: e.target.checked }))}
             />
-            Negative balance / needs replenishment only
+            Positive balance / needs replenishment only
           </label>
-          {(filters.expiry !== 'all' || filters.manufacturer !== 'all' || filters.negativeOnly) && (
+          {(filters.expiry !== 'all' || filters.manufacturer !== 'all' || filters.shortageOnly) && (
             <button className="text-sm text-gray-400 hover:text-gray-600" onClick={() => setFilters(DEFAULT_FILTERS)}>
               Clear filters
             </button>
@@ -839,12 +839,14 @@ function AddNdcModal({ open, onClose, facilityId, pharmacyId, period, onAdded })
       toast.error(`"${form.ndc}" is not a valid NDC.`);
       return;
     }
-    // A starting balance is a physical count and should almost never be
-    // negative — only ever confirm past this if the admin has actually
-    // checked the source and means it, not because of a bad import/typo.
-    if (Number(form.qtyOnHand) < 0) {
+    // Negative = surplus is the NORMAL starting state (a fresh physical
+    // count with nothing dispensed yet). A POSITIVE starting balance means
+    // this NDC is already short before any claims are processed — unusual
+    // for a starting figure, so confirm it's intentional, not a bad
+    // import/typo (e.g. a raw physical count entered without negating it).
+    if (Number(form.qtyOnHand) > 0) {
       const confirmed = window.confirm(
-        `Starting Qty on Hand is negative (${form.qtyOnHand}). A starting balance should almost never be negative — double-check the source before continuing. Add it anyway?`
+        `Starting Qty on Hand is positive (${form.qtyOnHand}), meaning this NDC starts out already short. That's unusual for a starting balance — double-check the source before continuing (remember: negative = surplus, positive = shortage). Add it anyway?`
       );
       if (!confirmed) return;
     }
@@ -1030,11 +1032,13 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
     return parsed.rows.map((r) => {
       const raw = new Decimal(r.qtyOnHandRaw);
       const qty = negateConvention ? raw.negated() : raw;
-      return { ...r, qtyOnHand: qty.toString(), negativeQty: qty.isNegative() && !qty.isZero() };
+      // isShortage: positive = shortage under the app's deficit-framed
+      // convention — unusual (and worth flagging) for a starting balance.
+      return { ...r, qtyOnHand: qty.toString(), isShortage: qty.isPositive() && !qty.isZero() };
     });
   }, [parsed, negateConvention]);
 
-  const negativeRows = displayRows.filter((r) => r.negativeQty);
+  const shortageRows = displayRows.filter((r) => r.isShortage);
 
   async function handleConfirm() {
     setImporting(true);
@@ -1143,37 +1147,38 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
               <label className="flex items-start gap-2">
                 <input type="radio" className="mt-1" checked={!negateConvention} onChange={() => setNegateConvention(false)} />
                 <span>
-                  <strong>Physical count</strong> — negative means a real shortage/backorder. Import values as-is.
+                  <strong>Running-ledger balance</strong> — negative means surplus/over-replenished (what you already have),
+                  positive means a shortage. Import values as-is — this already matches the app&apos;s convention.
                 </span>
               </label>
               <label className="flex items-start gap-2">
                 <input type="radio" className="mt-1" checked={negateConvention} onChange={() => setNegateConvention(true)} />
                 <span>
-                  <strong>Running-ledger balance</strong> — negative means surplus/over-replenished (what you already have), positive
-                  means a shortage. Sign-flip on import to match the app&apos;s physical-count convention.
+                  <strong>Physical count</strong> — positive means units you actually have, negative means a real
+                  shortage/backorder. Sign-flip on import to match the app&apos;s convention.
                 </span>
               </label>
             </div>
             <p className="mt-2 border-t border-teal-200 pt-2 text-xs text-teal-700">
-              This choice only affects how <em>this import</em> is read in. Once imported, every row is stored as a plain positive
-              on-hand count and the app always uses the same rule everywhere from then on: a claim subtracts, an order received
-              adds. It never keeps treating anything as &quot;negative = surplus&quot; after today — that translation happens once,
-              right here.
+              This choice only affects how <em>this import</em> is read in. Once imported, every row is stored under the app&apos;s
+              one native convention — <strong>negative = surplus, positive = shortage</strong> — and the app always uses that same
+              rule everywhere from then on: a claim ADDS toward shortage, an order received SUBTRACTS toward surplus. That
+              translation happens once, right here.
             </p>
           </div>
-          {negativeRows.length > 0 && (
+          {shortageRows.length > 0 && (
             <div className="mb-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-danger">
               <p className="font-semibold">
-                {negativeRows.length} row{negativeRows.length > 1 ? 's have' : ' has'} a NEGATIVE starting Qty on Hand (highlighted below).
+                {shortageRows.length} row{shortageRows.length > 1 ? 's have' : ' has'} a POSITIVE starting Qty on Hand (highlighted below).
               </p>
               <p className="mt-1">
-                A starting balance is a physical count and should almost never be negative — double-check the source file&apos;s
-                column before importing. Negative starting balances silently compound: every claim against that NDC will subtract
-                further, deepening an already-wrong number.
+                A starting balance is normally a fresh physical count with nothing dispensed yet, which should almost always be
+                negative (surplus) — a positive starting figure means this NDC starts out already short, which is unusual.
+                Double-check the convention picked above and the source file&apos;s column before importing.
               </p>
               <label className="mt-2 flex items-center gap-2 font-medium">
                 <input type="checkbox" checked={acknowledgedNegatives} onChange={(e) => setAcknowledgedNegatives(e.target.checked)} />
-                I&apos;ve verified these negative values are correct, not a data error.
+                I&apos;ve verified these positive values are correct, not a data error.
               </label>
             </div>
           )}
@@ -1189,10 +1194,10 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
               </thead>
               <tbody>
                 {displayRows.slice(0, 50).map((r, i) => (
-                  <tr key={i} className={`${i % 2 ? 'bg-surface-alt' : 'bg-white'} ${r.negativeQty ? 'bg-red-50/60' : ''}`}>
+                  <tr key={i} className={`${i % 2 ? 'bg-surface-alt' : 'bg-white'} ${r.isShortage ? 'bg-red-50/60' : ''}`}>
                     <td className="px-3 py-1.5 font-mono">{r.ndc}</td>
                     <td className="px-3 py-1.5">{r.productName}</td>
-                    <td className={`px-3 py-1.5 ${r.negativeQty ? 'font-semibold text-danger' : ''}`}>{r.qtyOnHand}</td>
+                    <td className={`px-3 py-1.5 ${r.isShortage ? 'font-semibold text-danger' : ''}`}>{r.qtyOnHand}</td>
                     <td className="px-3 py-1.5">{r.ppu340b ?? '—'}</td>
                   </tr>
                 ))}
@@ -1206,7 +1211,7 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
             <button
               className="btn-primary"
               onClick={handleConfirm}
-              disabled={importing || (negativeRows.length > 0 && !acknowledgedNegatives)}
+              disabled={importing || (shortageRows.length > 0 && !acknowledgedNegatives)}
             >
               {importing && <Loader2 className="h-4 w-4 animate-spin" />}
               Confirm Import

@@ -175,13 +175,13 @@ export default function ClaimBatchResults() {
   if (loading) return <SkeletonTable rows={8} cols={9} />;
   if (!claim) return <EmptyState title="Claim batch not found" message="This claim may have been removed or you may not have access to it." />;
 
-  const negativeCount = lineItems.filter((li) => li.qty_after !== null && Number(li.qty_after) < 0).length;
+  const shortageCount = lineItems.filter((li) => li.qty_after !== null && Number(li.qty_after) > 0).length;
 
   async function handleDeleteClaim() {
     if (
       !window.confirm(
         `Delete this entire claim batch (${claim.claim_date}, ${claim.pharmacies?.name})? This reverses its accumulator effect ` +
-          `(dispensed qty added back, reimbursement removed) and cannot be undone.`
+          `(dispensed qty backed out toward surplus, reimbursement removed) and cannot be undone.`
       )
     )
       return;
@@ -249,14 +249,15 @@ export default function ClaimBatchResults() {
         </div>
       </div>
 
-      {negativeCount > 0 && (
+      {shortageCount > 0 && (
         <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-danger">
           <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
           <span>
-            {negativeCount} NDC{negativeCount > 1 ? 's' : ''} went negative on-hand from this claim.{' '}
+            {shortageCount} NDC{shortageCount > 1 ? 's' : ''} went into shortage (positive balance) from this claim.{' '}
             <span className="text-red-700">
-              A negative balance means more was dispensed today than was on record — a real shortage, not a data error by itself.
-              These NDCs need a replenishment order; see them highlighted in the <strong>Replenishment by NDC</strong> tab below.
+              A positive balance means more was dispensed today than the surplus on record covered — a real shortage, not a data
+              error by itself. These NDCs need a replenishment order; see them highlighted in the <strong>Replenishment by NDC</strong>{' '}
+              tab below.
             </span>
           </span>
         </div>
@@ -298,7 +299,7 @@ export default function ClaimBatchResults() {
           />
           <StatCard label="Estimated Reimbursement" value={formatCurrency(claim.total_reimbursement)} tone="teal" />
           <StatCard label="Total Full Packages to Order" value={replenishmentTotals.totalRecommendedPacks} tone="warning" />
-          <StatCard label="Negative On-Hand NDCs" value={negativeCount} tone={negativeCount > 0 ? 'danger' : 'navy'} />
+          <StatCard label="NDCs in Shortage" value={shortageCount} tone={shortageCount > 0 ? 'danger' : 'navy'} />
         </div>
         <p className="text-xs text-gray-400">
           &quot;Claim line count&quot;, &quot;distinct RX count&quot;, and &quot;distinct NDC count&quot; are different measures — see the All Claims and Replenishment
@@ -575,7 +576,7 @@ function ReplenishmentTab({
       accessor: (r) => (r.startingBalance !== null ? Number(r.startingBalance) : null),
       render: (r) =>
         r.startingBalance !== null ? (
-          <span className={Number(r.startingBalance) < 0 ? 'text-danger' : ''} title={explainOnHand(r.startingBalance)}>
+          <span className={Number(r.startingBalance) > 0 ? 'text-danger' : ''} title={explainOnHand(r.startingBalance)}>
             {formatQty(r.startingBalance)}
           </span>
         ) : (
@@ -596,7 +597,7 @@ function ReplenishmentTab({
       accessor: (r) => (r.newBalance !== null ? Number(r.newBalance) : null),
       render: (r) =>
         r.newBalance !== null ? (
-          <span className={Number(r.newBalance) < 0 ? 'font-semibold text-danger' : ''} title={explainNewBalance(r.newBalance)}>
+          <span className={Number(r.newBalance) > 0 ? 'font-semibold text-danger' : ''} title={explainNewBalance(r.newBalance)}>
             {formatQty(r.newBalance)}
           </span>
         ) : (

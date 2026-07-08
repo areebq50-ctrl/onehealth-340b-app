@@ -72,22 +72,32 @@ export function reimbursementOwed(qty, ppu) {
 }
 
 /**
- * New Qty on Hand = Prior Qty on Hand − Total Qty Dispensed
+ * New Qty on Hand = Prior Qty on Hand + Total Qty Dispensed
  *
- * Example: prior=500, dispensed=90  -> 500 − 90  = 410   (isNegative: false)
- * Example: prior=40,  dispensed=90  -> 40  − 90  = -50   (isNegative: true — must be flagged red in UI, never blocked)
+ * SIGN CONVENTION (confirmed with the pharmacy team): the balance is
+ * deficit-framed, not a raw physical count. POSITIVE = a shortage (this
+ * many units short, needs ordering). NEGATIVE = surplus (this many units
+ * of extra stock on hand, no order needed). Dispensing a claim moves the
+ * balance UP (toward positive/shortage) since it consumes stock; an order
+ * received moves it DOWN (toward negative/surplus) since it replenishes.
+ * This is the single convention used everywhere in the app, in the
+ * database, and in every UI screen — there is no separate "physical count"
+ * representation internally.
  *
- * A negative result is a legitimate real-world scenario (over-dispensing
- * relative to recorded on-hand) and must be surfaced, not hidden or clamped.
+ * Example: prior=-500 (500 surplus), dispensed=90  -> -500 + 90 = -410 (still surplus, isPositive: false)
+ * Example: prior=-40  (40 surplus),  dispensed=90  -> -40  + 90 = 50   (now a 50 shortage, isPositive: true — flag red in UI)
+ *
+ * A positive result is a legitimate real-world scenario (dispensing more
+ * than was recorded as surplus) and must be surfaced, not hidden or clamped.
  */
 export function newQtyOnHand(priorQty, dispensedQty) {
   const priorD = toDecimal(priorQty);
   const dispensedD = toDecimal(dispensedQty);
   if (priorD === null || dispensedD === null) {
-    return { value: null, isNegative: false };
+    return { value: null, isPositive: false };
   }
-  const value = priorD.minus(dispensedD);
-  return { value, isNegative: value.isNegative() };
+  const value = priorD.plus(dispensedD);
+  return { value, isPositive: value.isPositive() && !value.isZero() };
 }
 
 /**
@@ -110,20 +120,22 @@ export function costOnHand340b(qtyOnHand, ppu) {
 /**
  * Replenishment (packs to order) business rule.
  *
- * Shortage       = max(0, -qtyAfter)              -- only when on-hand went negative
+ * Under the app's deficit-framed convention (positive = shortage, negative
+ * = surplus):
+ * Shortage       = max(0, qtyAfter)                -- only when on-hand went positive (short)
  * Exact Packs    = Shortage ÷ Pack Size            -- e.g. 1.25 packs, shown as-is, never rounded
  * Recommended    = ceil(Exact Packs)               -- whole packs to actually order (can't order 1.25)
  *
- * If qtyAfter is >= 0 (no shortage), all three are zero — a positive/zero
- * balance never produces a negative "packs to order".
+ * If qtyAfter is <= 0 (surplus or exactly balanced), all three are zero — a
+ * negative/zero balance never produces a negative "packs to order".
  *
  * This is a documented default (no prior business rule existed in the app).
  * If your actual purchasing policy differs (e.g. reordering before hitting
  * zero, or a different rounding rule), this is the one function to change.
  *
- * Example: qtyAfter=-60, packSize=90 -> shortage=60, exactPacks=0.6667, recommendedPacks=1
- * Example: qtyAfter=-34, packSize=120 -> shortage=34, exactPacks=0.2833, recommendedPacks=1
- * Example: qtyAfter=79,  packSize=110 -> shortage=0,  exactPacks=0,      recommendedPacks=0
+ * Example: qtyAfter=60, packSize=90 -> shortage=60, exactPacks=0.6667, recommendedPacks=1
+ * Example: qtyAfter=34, packSize=120 -> shortage=34, exactPacks=0.2833, recommendedPacks=1
+ * Example: qtyAfter=-79, packSize=110 -> shortage=0,  exactPacks=0,      recommendedPacks=0
  */
 export function packsToOrder(qtyAfter, packSize) {
   const qtyD = toDecimal(qtyAfter);
@@ -134,22 +146,25 @@ export function packsToOrder(qtyAfter, packSize) {
     return { shortage: null, exactPacks: null, recommendedPacks: null, flagged: true, reason: 'Pack Size is missing or zero — cannot compute packs to order' };
   }
 
-  if (qtyD.gte(0)) {
+  if (qtyD.lte(0)) {
     return { shortage: new Decimal(0), exactPacks: new Decimal(0), recommendedPacks: new Decimal(0), flagged: false, reason: null };
   }
 
-  const shortage = qtyD.negated();
+  const shortage = qtyD;
   const exactPacks = shortage.dividedBy(packSizeD);
   const recommendedPacks = exactPacks.ceil();
   return { shortage, exactPacks, recommendedPacks, flagged: false, reason: null };
 }
 
 /**
- * Signed Packs to Order = -(New Balance ÷ Pack Size), i.e. -(qtyAfter / packSize).
+ * Signed Packs to Order = New Balance ÷ Pack Size, i.e. qtyAfter / packSize.
  *
- * Sign convention (confirmed): POSITIVE = needs a replenishment order placed
- * today (this many packs short). NEGATIVE = over-replenished (this many
- * packs of surplus, no order needed). Zero = exactly balanced.
+ * Sign convention (confirmed with the pharmacy team): POSITIVE = needs a
+ * replenishment order placed today (this many packs short). NEGATIVE =
+ * over-replenished (this many packs of surplus, no order needed). Zero =
+ * exactly balanced. This mirrors qtyAfter directly — no negation — because
+ * the balance itself is already deficit-framed (positive = shortage,
+ * negative = surplus) everywhere in the app.
  *
  * Unlike packsToOrder() above (which clamps at zero and ceils to a whole
  * number — "how many packs to actually place on an order"), this returns
@@ -157,8 +172,8 @@ export function packsToOrder(qtyAfter, packSize) {
  * results table and the running accumulator view, where a surplus is just
  * as meaningful to show as a shortage.
  *
- * Example: qtyAfter=-51, packSize=8.5  -> signed = 6.0   (needs 6 packs ordered)
- * Example: qtyAfter=51,  packSize=8.5  -> signed = -6.0  (6 packs of surplus)
+ * Example: qtyAfter=51,  packSize=8.5  -> signed = 6.0   (needs 6 packs ordered)
+ * Example: qtyAfter=-51, packSize=8.5  -> signed = -6.0  (6 packs of surplus)
  * Example: qtyAfter=0,   packSize=8.5  -> signed = 0     (exactly balanced)
  */
 export function signedPacksToOrder(qtyAfter, packSize) {
@@ -170,7 +185,7 @@ export function signedPacksToOrder(qtyAfter, packSize) {
     return { value: null, flagged: true, reason: 'Pack Size is missing or zero — cannot compute packs to order' };
   }
 
-  const value = qtyD.dividedBy(packSizeD).negated();
+  const value = qtyD.dividedBy(packSizeD);
   return { value, flagged: false, reason: null };
 }
 
