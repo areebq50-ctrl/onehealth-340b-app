@@ -20,7 +20,7 @@ import { readAccumulatorWorkbook, parseAccumulatorSheet } from '../parsers/accum
 import { parseCardinalHealthInvoice } from '../parsers/cardinalHealthInvoiceParser.js';
 import { exportAccumulator } from '../lib/excelExport.js';
 import { formatCurrency, formatQty, packsOnHand, costOnHand340b, Decimal } from '../lib/calculations.js';
-import { buildDailySnapshot } from '../lib/ledger.js';
+import { buildDailySnapshot, buildDateRangeMatrix } from '../lib/ledger.js';
 import { explainOnHand, explainPacksOnHand, explainCostOnHand, explainDispensed, explainOrderReceived, explainSignedPacksToOrder } from '../lib/signExplain.js';
 import { normalizeNdc } from '../lib/ndc.js';
 import { getExpiryTone, EXPIRY_TONE_CLASSES } from '../components/accumulator/expiry.js';
@@ -127,6 +127,7 @@ export default function Accumulator() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [ledgerRow, setLedgerRow] = useState(null);
   const [view, setView] = useState('master'); // 'master' | 'daily'
+  const [dailyLayout, setDailyLayout] = useState('single'); // 'single' | 'grid'
   const [dailyEntries, setDailyEntries] = useState([]);
   const [loadingDaily, setLoadingDaily] = useState(false);
   const [selectedDate, setSelectedDate] = useState(null);
@@ -448,6 +449,61 @@ export default function Accumulator() {
     [isAllPharmacies]
   );
 
+  // Every day of the period up to today (if this is the current/latest
+  // period — future days don't exist yet) or through the last day of the
+  // month (for a closed historical period) — one column per day, matching
+  // the pharmacy's own spreadsheet layout instead of one date at a time.
+  const gridDates = useMemo(() => {
+    if (!period) return [];
+    const lastOfMonth = new Date(period.year, period.month, 0).getDate();
+    const today = new Date();
+    const isCurrentMonth = today.getFullYear() === period.year && today.getMonth() + 1 === period.month;
+    const lastDay = isCurrentMonth ? Math.min(today.getDate(), lastOfMonth) : lastOfMonth;
+    return Array.from({ length: lastDay }, (_, i) => `${period.year}-${String(period.month).padStart(2, '0')}-${String(i + 1).padStart(2, '0')}`);
+  }, [period]);
+
+  const gridRows = useMemo(() => {
+    if (gridDates.length === 0) return [];
+    const matrix = buildDateRangeMatrix(dailyBaseRows, entriesByNdc, gridDates);
+    return filters.shortageOnly ? matrix.filter((r) => Number(r.cells[r.cells.length - 1]?.endingBalance) > 0) : matrix;
+  }, [dailyBaseRows, entriesByNdc, gridDates, filters.shortageOnly]);
+
+  const gridColumns = useMemo(
+    () => [
+      { key: 'ndc', label: 'NDC', sortable: true, render: (r) => <span className="font-mono text-xs">{r.ndc}</span> },
+      { key: 'product_name', label: 'Product Name', sortable: true },
+      { key: 'pack_size', label: 'Pack Size', sortable: true, accessor: (r) => Number(r.pack_size ?? 0) },
+      ...gridDates.map((date, i) => ({
+        key: `day-${date}`,
+        label: new Date(`${date}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }),
+        sortable: true,
+        accessor: (r) => Number(r.cells[i]?.endingBalance ?? 0),
+        render: (r) => {
+          const cell = r.cells[i];
+          if (!cell) return '—';
+          return (
+            <span
+              className={Number(cell.endingBalance) > 0 ? 'font-semibold text-danger' : ''}
+              title={`${date}: ${explainOnHand(cell.endingBalance)}`}
+            >
+              {formatQty(cell.endingBalance)}
+            </span>
+          );
+        },
+      })),
+      {
+        key: 'history',
+        label: 'Full History',
+        render: (r) => (
+          <button className="btn-secondary px-2 py-1" title="View this NDC's full running ledger for the period" onClick={() => setLedgerRow(r)}>
+            <ScrollText className="h-3.5 w-3.5" />
+          </button>
+        ),
+      },
+    ],
+    [gridDates]
+  );
+
   async function refreshRows() {
     const data = await fetchAccumulatorRows(selectedFacilityId, selectedPharmacyId, period.month, period.year);
     setRows(data);
@@ -645,6 +701,30 @@ export default function Accumulator() {
         <div className="card flex flex-wrap items-end gap-4 p-4">
           {view === 'daily' && (
             <div>
+              <label className="label-text">Layout</label>
+              <div className="flex rounded-lg border border-gray-200 p-0.5">
+                <button
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                    dailyLayout === 'single' ? 'bg-navy text-white' : 'text-gray-500 hover:text-navy'
+                  }`}
+                  onClick={() => setDailyLayout('single')}
+                >
+                  Single Day
+                </button>
+                <button
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                    dailyLayout === 'grid' ? 'bg-navy text-white' : 'text-gray-500 hover:text-navy'
+                  }`}
+                  onClick={() => setDailyLayout('grid')}
+                  title="One column per day this period, same as your own tracking sheet"
+                >
+                  All Days (Columns)
+                </button>
+              </div>
+            </div>
+          )}
+          {view === 'daily' && dailyLayout === 'single' && (
+            <div>
               <label className="label-text">As of date</label>
               <input
                 className="input-field"
@@ -698,7 +778,9 @@ export default function Accumulator() {
             </button>
           )}
           <span className="ml-auto text-xs text-gray-400">
-            {view === 'daily' ? `${dailyRows.length} of ${rows.length} rows` : `${filteredRows.length} of ${rows.length} rows`}
+            {view === 'daily'
+              ? `${(dailyLayout === 'grid' ? gridRows : dailyRows).length} of ${rows.length} rows`
+              : `${filteredRows.length} of ${rows.length} rows`}
           </span>
         </div>
       )}
@@ -731,6 +813,12 @@ export default function Accumulator() {
           />
         ) : loadingDaily ? (
           <SkeletonTable rows={8} cols={9} />
+        ) : dailyLayout === 'grid' ? (
+          gridRows.length === 0 ? (
+            <EmptyState title="No rows match these filters" message="Try clearing a filter above." />
+          ) : (
+            <DataTable columns={gridColumns} rows={gridRows} rowKey={(r) => r.id} searchPlaceholder="Search NDC, product name, or manufacturer..." />
+          )
         ) : dailyRows.length === 0 ? (
           <EmptyState title="No rows match these filters" message="Try clearing a filter above, or picking a different date." />
         ) : (

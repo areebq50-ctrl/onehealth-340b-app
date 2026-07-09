@@ -72,3 +72,38 @@ export function buildDailySnapshot(accumulatorRows, entriesByNdc, targetDate) {
     };
   });
 }
+
+/**
+ * Builds a wide, spreadsheet-style matrix: every current accumulator row
+ * gets ONE cell per date in `dates` holding that day's Ending Balance —
+ * matching a day-per-column layout instead of picking one date at a time.
+ * `dates` must be sorted ascending. Each NDC's day-series is computed once
+ * (not once per date) and walked with a single forward pointer, so this
+ * stays fast even for a full month x a large accumulator.
+ */
+export function buildDateRangeMatrix(accumulatorRows, entriesByNdc, dates) {
+  return accumulatorRows.map((row) => {
+    const days = groupAuditEntriesByDay(entriesByNdc.get(row.ndc) ?? [], row.pack_size);
+    let dayIdx = 0;
+    let carried = null;
+    let hadAnyActivityYet = false;
+    const cells = dates.map((date) => {
+      while (dayIdx < days.length && days[dayIdx].date <= date) {
+        carried = days[dayIdx].endingBalance;
+        hadAnyActivityYet = true;
+        dayIdx += 1;
+      }
+      const hasActivityToday = dayIdx > 0 && days[dayIdx - 1].date === date;
+      if (hadAnyActivityYet) {
+        return { date, endingBalance: carried, hasActivityToday, packsToOrder: signedPacksToOrder(carried, row.pack_size) };
+      }
+      // No activity on or before this date yet — look ahead for the first
+      // day's Starting Balance (the value before its first event), else
+      // fall back to the row's current on-hand (nothing has ever changed it).
+      const next = days.find((d) => d.date > date);
+      const fallback = next ? next.startingBalance : row.qty_on_hand;
+      return { date, endingBalance: fallback, hasActivityToday: false, packsToOrder: signedPacksToOrder(fallback, row.pack_size) };
+    });
+    return { ...row, cells };
+  });
+}
