@@ -6,7 +6,6 @@ import ClaimBatchResults from './pages/ClaimBatchResults.jsx';
 import ClaimSearch from './pages/ClaimSearch.jsx';
 import UploadClaims from './pages/UploadClaims.jsx';
 import Accumulator from './pages/Accumulator.jsx';
-import DataHealth from './pages/DataHealth.jsx';
 import Reports from './pages/Reports.jsx';
 import AIAssistant from './pages/AIAssistant.jsx';
 import Settings from './pages/Settings.jsx';
@@ -32,7 +31,6 @@ export default function App() {
         <Route path="/day/:claimId" element={<ClaimBatchResults />} />
         <Route path="/upload" element={<UploadClaims />} />
         <Route path="/accumulator" element={<Accumulator />} />
-        <Route path="/data-health" element={<DataHealth />} />
         <Route path="/reports" element={<Reports />} />
         <Route path="/assistant" element={<AIAssistant />} />
         <Route

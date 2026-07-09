@@ -259,45 +259,6 @@ export function exportReplenishmentReport(rows, { facilityName, pharmacyName, cl
 }
 
 /**
- * Data Health Export — one sheet per issue category (output of
- * computeIssues() in pages/DataHealth.jsx), so a health check result can be
- * saved/shared instead of only viewed on screen.
- */
-export function exportDataHealthReport(issues, { facilityName, pharmacyLabel, rangeLabel } = {}) {
-  const wb = XLSX.utils.book_new();
-  addReportInfoSheet(wb, {
-    reportType: 'Data Health Report',
-    facilityName,
-    pharmacyLabel,
-    rangeLabel,
-  });
-
-  const sections = [
-    ['Missing Pack Size', issues.missingPackSize],
-    ['Missing 340B PPU', issues.missingPpu],
-    ['Missing 340B Price', issues.missingPrice],
-    ['Stale (30+ days)', issues.stale],
-    ['Missing CIN or Mfr', issues.missingMetadata],
-  ];
-
-  for (const [name, rows] of sections) {
-    const sheetRows = rows.map((r) => ({
-      NDC: r.ndc,
-      'Product Name': r.product_name,
-      Pharmacy: r.pharmacyName ?? '',
-      'Pack Size': qty(r.pack_size),
-      '340B PPU': money(r.ppu_340b),
-      '340B Price': money(r.price_340b),
-      CIN: r.cin ?? '',
-      Manufacturer: r.manufacturer ?? '',
-      'Last Updated': r.updated_at ?? '',
-    }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheetRows), name.slice(0, 31));
-  }
-  downloadWorkbook(wb, `Data_Health_Report_${new Date().toISOString().slice(0, 10)}.xlsx`);
-}
-
-/**
  * Order Sheet Export — just the NDCs that actually need ordering from a
  * claim batch (orderPanelRows: recommendedPacks > 0 only), with a total
  * cost row. Separate from exportReplenishmentReport, which covers every
