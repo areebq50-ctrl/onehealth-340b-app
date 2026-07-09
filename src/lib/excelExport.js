@@ -116,6 +116,41 @@ export function exportAccumulator(monthsData, { facilityName, pharmacyLabel } = 
 }
 
 /**
+ * Daily Ledger Grid Export: one row per NDC, one column per day of the
+ * period (through today for the current period) — mirrors the "All Days
+ * (Columns)" grid on screen and the pharmacy's own day-per-column tracking
+ * sheet layout, instead of the one-sheet-per-month master export above.
+ * gridRows: output of buildDateRangeMatrix() (each row has `.cells`, one
+ * per entry in `dates`, in the same order).
+ */
+export function exportAccumulatorGrid(gridRows, dates, { facilityName, pharmacyLabel, rangeLabel } = {}) {
+  const wb = XLSX.utils.book_new();
+  addReportInfoSheet(wb, {
+    reportType: 'Daily Ledger Grid',
+    facilityName,
+    pharmacyLabel,
+    rangeLabel,
+  });
+
+  const dayLabels = dates.map((d) => new Date(`${d}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }));
+
+  const sheetRows = gridRows.map((r) => {
+    const row = {
+      NDC: r.ndc,
+      'Product Name': r.product_name,
+      'Pack Size': qty(r.pack_size),
+    };
+    dates.forEach((date, i) => {
+      row[dayLabels[i]] = qty(r.cells[i]?.endingBalance);
+    });
+    return row;
+  });
+
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheetRows), 'Daily Ledger Grid');
+  downloadWorkbook(wb, `Daily_Ledger_Grid_${pharmacyLabel ?? 'pharmacy'}_${rangeLabel ?? ''}.xlsx`);
+}
+
+/**
  * Monthly Reimbursement Report: NDC | Drug Name | Total Qty | Total Packs |
  * 340B PPU | Total Reimbursement Owed | Month, one sheet per pharmacy, plus
  * a combined all-pharmacies sheet with a Pharmacy column when more than one
@@ -221,6 +256,75 @@ export function exportReplenishmentReport(rows, { facilityName, pharmacyName, cl
   }));
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheetRows), 'Replenishment by NDC');
   downloadWorkbook(wb, `Replenishment_${pharmacyName}_${claimDate}.xlsx`);
+}
+
+/**
+ * Data Health Export — one sheet per issue category (output of
+ * computeIssues() in pages/DataHealth.jsx), so a health check result can be
+ * saved/shared instead of only viewed on screen.
+ */
+export function exportDataHealthReport(issues, { facilityName, pharmacyLabel, rangeLabel } = {}) {
+  const wb = XLSX.utils.book_new();
+  addReportInfoSheet(wb, {
+    reportType: 'Data Health Report',
+    facilityName,
+    pharmacyLabel,
+    rangeLabel,
+  });
+
+  const sections = [
+    ['Missing Pack Size', issues.missingPackSize],
+    ['Missing 340B PPU', issues.missingPpu],
+    ['Missing 340B Price', issues.missingPrice],
+    ['Stale (30+ days)', issues.stale],
+    ['Missing CIN or Mfr', issues.missingMetadata],
+  ];
+
+  for (const [name, rows] of sections) {
+    const sheetRows = rows.map((r) => ({
+      NDC: r.ndc,
+      'Product Name': r.product_name,
+      Pharmacy: r.pharmacyName ?? '',
+      'Pack Size': qty(r.pack_size),
+      '340B PPU': money(r.ppu_340b),
+      '340B Price': money(r.price_340b),
+      CIN: r.cin ?? '',
+      Manufacturer: r.manufacturer ?? '',
+      'Last Updated': r.updated_at ?? '',
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheetRows), name.slice(0, 31));
+  }
+  downloadWorkbook(wb, `Data_Health_Report_${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+
+/**
+ * Order Sheet Export — just the NDCs that actually need ordering from a
+ * claim batch (orderPanelRows: recommendedPacks > 0 only), with a total
+ * cost row. Separate from exportReplenishmentReport, which covers every
+ * matched NDC in the batch, not just what needs ordering.
+ */
+export function exportOrderSheet(rows, { facilityName, pharmacyName, claimDate }) {
+  const wb = XLSX.utils.book_new();
+  addReportInfoSheet(wb, {
+    reportType: 'Replenishment Order Sheet',
+    facilityName,
+    pharmacyLabel: pharmacyName,
+    rangeLabel: claimDate,
+  });
+
+  const totalCost = rows.reduce((sum, r) => sum + (r.totalOrderCost ? Number(r.totalOrderCost) : 0), 0);
+
+  const sheetRows = rows.map((r) => ({
+    'Product Name': r.productName,
+    NDC: r.ndc,
+    'Packs to Order': qty(r.recommendedPacks),
+    '340B Price': money(r.price340b),
+    'Total Order Cost': money(r.totalOrderCost),
+  }));
+  sheetRows.push({ 'Product Name': 'TOTAL', NDC: '', 'Packs to Order': '', '340B Price': '', 'Total Order Cost': money(totalCost) });
+
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheetRows), 'Order Sheet');
+  downloadWorkbook(wb, `Order_Sheet_${pharmacyName}_${claimDate}.xlsx`);
 }
 
 /**

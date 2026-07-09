@@ -1,5 +1,37 @@
 import { supabase } from './supabaseClient.js';
 
+/**
+ * Global "find this drug" search across every facility/pharmacy/period the
+ * current user can see (RLS-scoped), matching NDC or product name. Used by
+ * the header search box to jump straight to a drug instead of manually
+ * reselecting facility -> pharmacy -> period -> scrolling. Only the most
+ * recent (month, year) row per facility+pharmacy+NDC combo is kept, so a
+ * drug that exists across many historical periods shows up once.
+ */
+export async function searchAccumulatorGlobal(query) {
+  const q = query.trim().replace(/[,()%]/g, '');
+  if (!q) return [];
+  const { data, error } = await supabase
+    .from('accumulator')
+    .select('id, ndc, product_name, qty_on_hand, month, year, facility_id, pharmacy_id, facilities(name), pharmacies(name)')
+    .or(`ndc.ilike.%${q}%,product_name.ilike.%${q}%`)
+    .order('year', { ascending: false })
+    .order('month', { ascending: false })
+    .limit(100);
+  if (error) throw error;
+
+  const seen = new Set();
+  const results = [];
+  for (const r of data ?? []) {
+    const key = `${r.facility_id}-${r.pharmacy_id}-${r.ndc}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    results.push({ ...r, facilityName: r.facilities?.name ?? '—', pharmacyName: r.pharmacies?.name ?? '—' });
+    if (results.length >= 10) break;
+  }
+  return results;
+}
+
 /** Distinct (month, year) periods on record for a facility+pharmacy, newest first. */
 export async function fetchPeriods(facilityId, pharmacyId) {
   let query = supabase.from('accumulator').select('month, year').eq('facility_id', facilityId);

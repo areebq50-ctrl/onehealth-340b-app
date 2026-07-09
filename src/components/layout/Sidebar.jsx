@@ -7,6 +7,7 @@ import {
   Sparkles,
   Settings as SettingsIcon,
   FolderSearch,
+  HeartPulse,
 } from 'lucide-react';
 import Logo from '../common/Logo.jsx';
 
@@ -15,6 +16,7 @@ const NAV_ITEMS = [
   { to: '/upload', label: 'Upload Claims', icon: UploadCloud },
   { to: '/claims', label: 'Claim Search', icon: FolderSearch },
   { to: '/accumulator', label: 'Accumulator', icon: Database },
+  { to: '/data-health', label: 'Data Health', icon: HeartPulse },
   { to: '/reports', label: 'Reports', icon: FileBarChart2 },
   { to: '/assistant', label: 'AI Assistant', icon: Sparkles },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },

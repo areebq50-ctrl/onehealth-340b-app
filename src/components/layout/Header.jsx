@@ -3,6 +3,7 @@ import { LogOut, ChevronDown } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import Breadcrumb from './Breadcrumb.jsx';
 import ScopeLabel from '../common/ScopeLabel.jsx';
+import GlobalNdcSearch from './GlobalNdcSearch.jsx';
 
 export default function Header() {
   const { profile, signOut } = useAuth();
@@ -11,8 +12,12 @@ export default function Header() {
   const initials = (profile?.email ?? '?').slice(0, 2).toUpperCase();
 
   return (
-    <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-gray-200 bg-white px-6">
+    <header className="sticky top-0 z-10 flex h-16 items-center justify-between gap-4 border-b border-gray-200 bg-white px-6">
       <Breadcrumb />
+
+      <div className="hidden flex-1 justify-center md:flex">
+        <GlobalNdcSearch />
+      </div>
 
       <div className="flex items-center gap-4">
         <ScopeLabel className="hidden lg:flex" />

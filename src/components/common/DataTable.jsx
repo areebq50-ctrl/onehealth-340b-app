@@ -18,8 +18,9 @@ export default function DataTable({
   emptyMessage = 'Nothing to show here.',
   onRowClick,
   rowClassName,
+  initialSearch = '',
 }) {
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(initialSearch);
   const [sortKey, setSortKey] = useState(null);
   const [sortDir, setSortDir] = useState('asc');
   const [page, setPage] = useState(1);

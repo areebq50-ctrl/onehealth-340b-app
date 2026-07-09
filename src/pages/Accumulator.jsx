@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Download, Plus, Upload, FileText, CalendarRange, CalendarDays, Loader2, Lock, Pencil, Trash2, AlertTriangle, ScrollText } from 'lucide-react';
 import { useFacility } from '../context/FacilityContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -18,7 +19,7 @@ import {
 } from '../lib/accumulatorApi.js';
 import { readAccumulatorWorkbook, parseAccumulatorSheet } from '../parsers/accumulatorXlsxParser.js';
 import { parseCardinalHealthInvoice } from '../parsers/cardinalHealthInvoiceParser.js';
-import { exportAccumulator } from '../lib/excelExport.js';
+import { exportAccumulator, exportAccumulatorGrid } from '../lib/excelExport.js';
 import { formatCurrency, formatQty, packsOnHand, costOnHand340b, Decimal } from '../lib/calculations.js';
 import { buildDailySnapshot, buildDateRangeMatrix } from '../lib/ledger.js';
 import { explainOnHand, explainPacksOnHand, explainCostOnHand, explainDispensed, explainOrderReceived, explainSignedPacksToOrder } from '../lib/signExplain.js';
@@ -117,6 +118,8 @@ export default function Accumulator() {
   const { selectedFacilityId, selectedPharmacyId, selectedFacility, selectedPharmacy, isAllPharmacies } = useFacility();
   const { isAdmin } = useAuth();
   const toast = useToast();
+  const [searchParams] = useSearchParams();
+  const ndcFromSearch = searchParams.get('ndc') ?? '';
 
   const [periods, setPeriods] = useState([]);
   const [period, setPeriod] = useState(null);
@@ -185,6 +188,14 @@ export default function Accumulator() {
   useEffect(() => {
     setSelectedDate(null);
   }, [selectedFacilityId, selectedPharmacyId, period]);
+
+  // Arriving from the header's global NDC search (?ndc=...) always means
+  // "show me this drug in the master list" — force back to Master view even
+  // if Daily Ledger was previously selected, since the query stays on the
+  // same route (no remount) when only the search param changes.
+  useEffect(() => {
+    if (ndcFromSearch) setView('master');
+  }, [ndcFromSearch]);
 
   useEffect(() => {
     async function loadDaily() {
@@ -594,13 +605,23 @@ export default function Accumulator() {
         <div className="flex flex-wrap gap-2">
           <button
             className="btn-secondary"
-            onClick={() =>
-              rows.length > 0 &&
-              exportAccumulator([{ month: period.month, year: period.year, rows }], {
-                facilityName: selectedFacility?.name,
-                pharmacyLabel: isAllPharmacies ? 'All Pharmacies' : selectedPharmacy?.name,
-              })
-            }
+            onClick={() => {
+              const pharmacyLabel = isAllPharmacies ? 'All Pharmacies' : selectedPharmacy?.name;
+              if (view === 'daily' && dailyLayout === 'grid') {
+                if (gridRows.length > 0) {
+                  exportAccumulatorGrid(gridRows, gridDates, {
+                    facilityName: selectedFacility?.name,
+                    pharmacyLabel,
+                    rangeLabel: `${MONTH_NAMES[period.month - 1]} ${period.year}`,
+                  });
+                }
+              } else if (rows.length > 0) {
+                exportAccumulator([{ month: period.month, year: period.year, rows }], {
+                  facilityName: selectedFacility?.name,
+                  pharmacyLabel,
+                });
+              }
+            }}
           >
             <Download className="h-4 w-4" /> Export
           </button>
@@ -827,7 +848,14 @@ export default function Accumulator() {
       ) : filteredRows.length === 0 ? (
         <EmptyState title="No rows match these filters" message="Try clearing a filter above." />
       ) : (
-        <DataTable columns={columns} rows={filteredRows} rowKey={(r) => r.id} searchPlaceholder="Search NDC, product name, manufacturer, or CIN..." />
+        <DataTable
+          key={ndcFromSearch}
+          columns={columns}
+          rows={filteredRows}
+          rowKey={(r) => r.id}
+          searchPlaceholder="Search NDC, product name, manufacturer, or CIN..."
+          initialSearch={ndcFromSearch}
+        />
       )}
 
       <Modal open={Boolean(editingRow)} onClose={() => setEditingRow(null)} title={`Edit ${editingRow?.ndc ?? ''}`}>

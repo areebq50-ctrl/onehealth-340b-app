@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { AlertTriangle, Download, ArrowLeft, Eye, ClipboardList, Package, ScrollText, FileSpreadsheet, Wrench, Loader2, Trash2 } from 'lucide-react';
+import { AlertTriangle, Download, ArrowLeft, Eye, ClipboardList, Package, ScrollText, FileSpreadsheet, Wrench, Loader2, Trash2, Printer } from 'lucide-react';
 import { fetchClaimDetail } from '../lib/dashboardApi.js';
 import { fetchClaimRawLines, fetchAuditLogByClaim, findAccumulatorRow, deleteClaim } from '../lib/claimsApi.js';
 import { confirmReplenishmentOrder } from '../lib/accumulatorApi.js';
 import { formatCurrency, formatQty, packsToOrder, signedPacksToOrder, Decimal } from '../lib/calculations.js';
 import { explainOnHand, explainDispensed, explainNewBalance, explainSignedPacksToOrder, explainRecommendedPacks } from '../lib/signExplain.js';
-import { exportDailyClaims, exportReplenishmentReport, exportProcessedWorkbook } from '../lib/excelExport.js';
+import { exportDailyClaims, exportReplenishmentReport, exportProcessedWorkbook, exportOrderSheet } from '../lib/excelExport.js';
+import { printOrderSheet } from '../lib/printOrderSheet.js';
 import { useToast } from '../context/ToastContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { SkeletonTable } from '../components/common/Skeleton.jsx';
@@ -698,7 +699,37 @@ function ReplenishmentTab({
       </div>
 
       <div>
-        <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">Replenishment Order Panel — drugs needing an order today</h3>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-500">Replenishment Order Panel — drugs needing an order today</h3>
+          {orderPanelRows.length > 0 && (
+            <div className="flex gap-2">
+              <button
+                className="btn-secondary"
+                onClick={() =>
+                  printOrderSheet(orderPanelRows, {
+                    facilityName: claim.facilities?.name ?? 'facility',
+                    pharmacyName: claim.pharmacies?.name ?? 'pharmacy',
+                    claimDate: claim.claim_date,
+                  })
+                }
+              >
+                <Printer className="h-4 w-4" /> Print Order Sheet
+              </button>
+              <button
+                className="btn-secondary"
+                onClick={() =>
+                  exportOrderSheet(orderPanelRows, {
+                    facilityName: claim.facilities?.name ?? 'facility',
+                    pharmacyName: claim.pharmacies?.name ?? 'pharmacy',
+                    claimDate: claim.claim_date,
+                  })
+                }
+              >
+                <Download className="h-4 w-4" /> Export Order Sheet
+              </button>
+            </div>
+          )}
+        </div>
         {orderPanelRows.length === 0 ? (
           <EmptyState icon={Package} title="Nothing to order" message="No NDCs in this batch need replenishment right now." />
         ) : (
