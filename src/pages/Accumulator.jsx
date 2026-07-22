@@ -135,6 +135,7 @@ export default function Accumulator() {
   const [dailyEntries, setDailyEntries] = useState([]);
   const [loadingDaily, setLoadingDaily] = useState(false);
   const [selectedDate, setSelectedDate] = useState(null);
+  const [orderListDate, setOrderListDate] = useState(null); // null = current/live, not filtered to a past day
   const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [rolloverOpen, setRolloverOpen] = useState(false);
@@ -188,6 +189,7 @@ export default function Accumulator() {
   // context instead of carrying forward a date from a different period.
   useEffect(() => {
     setSelectedDate(null);
+    setOrderListDate(null);
   }, [selectedFacilityId, selectedPharmacyId, period]);
 
   // Arriving from the header's global NDC search (?ndc=...) always means
@@ -200,7 +202,10 @@ export default function Accumulator() {
 
   useEffect(() => {
     async function loadDaily() {
-      if (view !== 'daily' || !facilitySelected || !period || isAllPharmacies) {
+      // Order List also needs the audit trail once a specific "as of" date
+      // is picked (to reconstruct that day's balance) — same data source
+      // as Daily Ledger, so it's fetched under the same condition.
+      if ((view !== 'daily' && view !== 'orderlist') || !facilitySelected || !period || isAllPharmacies) {
         setDailyEntries([]);
         return;
       }
@@ -345,19 +350,27 @@ export default function Accumulator() {
   }, [rows, filters]);
 
   // Clean NDC | Product Name | Pack Size | Packs to Order list — every NDC
-  // currently needing an order, whole packs only (rounded up), matching how
-  // this gets worked out by hand instead of the full 13-column master table.
+  // needing an order, whole packs only (rounded up), matching how this gets
+  // worked out by hand instead of the full 13-column master table. With no
+  // date picked, this reflects the CURRENT live balance; with a date picked
+  // (via buildDailySnapshot's Ending Balance for that day, same
+  // reconstruction the Daily Ledger uses), it reflects that day's balance
+  // instead — e.g. "what did this specific day's activity leave short."
   const orderListRows = useMemo(() => {
-    return rows
-      .map((r) => ({ ...r, order: packsToOrder(r.qty_on_hand, r.pack_size) }))
+    const base = orderListDate ? buildDailySnapshot(rows, entriesByNdc, orderListDate) : rows;
+    return base
+      .map((r) => ({
+        ...r,
+        order: packsToOrder(orderListDate ? r.endingBalance : r.qty_on_hand, r.pack_size),
+      }))
       .filter((r) => r.order.recommendedPacks?.gt(0))
       .sort((a, b) => (a.product_name ?? '').localeCompare(b.product_name ?? ''));
-  }, [rows]);
+  }, [rows, entriesByNdc, orderListDate]);
 
   const orderSheetMeta = {
     facilityName: selectedFacility?.name ?? 'facility',
     pharmacyName: isAllPharmacies ? 'All Pharmacies' : selectedPharmacy?.name ?? 'pharmacy',
-    claimDate: period ? `${MONTH_NAMES[period.month - 1]} ${period.year}` : '',
+    claimDate: orderListDate ?? (period ? `${MONTH_NAMES[period.month - 1]} ${period.year}` : ''),
   };
   const orderSheetExportRows = orderListRows.map((r) => ({
     ndc: r.ndc,
@@ -883,7 +896,31 @@ export default function Accumulator() {
       ) : view === 'orderlist' ? (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm text-gray-500">Every NDC currently needing an order — whole packs only, nothing else.</p>
+            <div className="flex flex-wrap items-center gap-3">
+              <p className="text-sm text-gray-500">
+                {orderListDate ? `What was short as of ${orderListDate}.` : 'Every NDC currently needing an order.'} Whole packs only, nothing
+                else.
+              </p>
+              {isAllPharmacies ? (
+                <span className="text-xs text-gray-400">(Select a specific pharmacy to filter by day)</span>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <input
+                    className="input-field w-auto py-1"
+                    type="date"
+                    min={period ? `${period.year}-${String(period.month).padStart(2, '0')}-01` : undefined}
+                    max={period ? `${period.year}-${String(period.month).padStart(2, '0')}-${String(new Date(period.year, period.month, 0).getDate()).padStart(2, '0')}` : undefined}
+                    value={orderListDate ?? ''}
+                    onChange={(e) => setOrderListDate(e.target.value || null)}
+                  />
+                  {orderListDate && (
+                    <button className="text-sm text-gray-400 hover:text-gray-600" onClick={() => setOrderListDate(null)}>
+                      Back to current
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
             {orderListRows.length > 0 && (
               <div className="flex gap-2">
                 <button className="btn-secondary" onClick={() => printOrderSheet(orderSheetExportRows, orderSheetMeta)}>
@@ -895,8 +932,10 @@ export default function Accumulator() {
               </div>
             )}
           </div>
-          {orderListRows.length === 0 ? (
-            <EmptyState title="Nothing needs ordering right now" message="Every NDC in this period is balanced or in surplus." />
+          {orderListDate && loadingDaily ? (
+            <SkeletonTable rows={8} cols={4} />
+          ) : orderListRows.length === 0 ? (
+            <EmptyState title="Nothing needed ordering" message="Every NDC was balanced or in surplus at this point." />
           ) : (
             <DataTable
               columns={[
