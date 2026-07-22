@@ -278,11 +278,19 @@ export function exportOrderSheet(rows, { facilityName, pharmacyName, claimDate }
   const sheetRows = rows.map((r) => ({
     'Product Name': r.productName,
     NDC: r.ndc,
+    'Pack Size': qty(r.packSize),
     'Packs to Order': qty(r.recommendedPacks),
     '340B Price': money(r.price340b),
     'Total Order Cost': money(r.totalOrderCost),
   }));
-  sheetRows.push({ 'Product Name': 'TOTAL', NDC: '', 'Packs to Order': '', '340B Price': '', 'Total Order Cost': money(totalCost) });
+  sheetRows.push({
+    'Product Name': 'TOTAL',
+    NDC: '',
+    'Pack Size': '',
+    'Packs to Order': '',
+    '340B Price': '',
+    'Total Order Cost': money(totalCost),
+  });
 
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheetRows), 'Order Sheet');
   downloadWorkbook(wb, `Order_Sheet_${pharmacyName}_${claimDate}.xlsx`);

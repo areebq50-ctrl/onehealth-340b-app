@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { AlertTriangle, Download, ArrowLeft, Eye, ClipboardList, Package, ScrollText, FileSpreadsheet, Wrench, Loader2, Trash2, Printer } from 'lucide-react';
+import { AlertTriangle, Download, ArrowLeft, Eye, ClipboardList, Package, ScrollText, FileSpreadsheet, FileText, Wrench, Loader2, Trash2, Printer } from 'lucide-react';
 import { fetchClaimDetail } from '../lib/dashboardApi.js';
 import { fetchClaimRawLines, fetchAuditLogByClaim, findAccumulatorRow, deleteClaim } from '../lib/claimsApi.js';
 import { confirmReplenishmentOrder } from '../lib/accumulatorApi.js';
 import { formatCurrency, formatQty, packsToOrder, signedPacksToOrder, Decimal } from '../lib/calculations.js';
 import { explainOnHand, explainDispensed, explainNewBalance, explainSignedPacksToOrder, explainRecommendedPacks } from '../lib/signExplain.js';
 import { exportDailyClaims, exportReplenishmentReport, exportProcessedWorkbook, exportOrderSheet } from '../lib/excelExport.js';
-import { printOrderSheet } from '../lib/printOrderSheet.js';
+import { printOrderSheet, downloadOrderSheetPdf } from '../lib/printOrderSheet.js';
 import { useToast } from '../context/ToastContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { SkeletonTable } from '../components/common/Skeleton.jsx';
@@ -714,6 +714,18 @@ function ReplenishmentTab({
                 }
               >
                 <Printer className="h-4 w-4" /> Print Order Sheet
+              </button>
+              <button
+                className="btn-secondary"
+                onClick={() =>
+                  downloadOrderSheetPdf(orderPanelRows, {
+                    facilityName: claim.facilities?.name ?? 'facility',
+                    pharmacyName: claim.pharmacies?.name ?? 'pharmacy',
+                    claimDate: claim.claim_date,
+                  })
+                }
+              >
+                <FileText className="h-4 w-4" /> Download PDF
               </button>
               <button
                 className="btn-secondary"

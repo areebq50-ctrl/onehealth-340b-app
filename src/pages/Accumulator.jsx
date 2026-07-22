@@ -20,7 +20,7 @@ import {
 import { readAccumulatorWorkbook, parseAccumulatorSheet } from '../parsers/accumulatorXlsxParser.js';
 import { parseCardinalHealthInvoice } from '../parsers/cardinalHealthInvoiceParser.js';
 import { exportAccumulator, exportAccumulatorGrid, exportOrderSheet } from '../lib/excelExport.js';
-import { printOrderSheet } from '../lib/printOrderSheet.js';
+import { printOrderSheet, downloadOrderSheetPdf } from '../lib/printOrderSheet.js';
 import { formatCurrency, formatQty, packsOnHand, costOnHand340b, packsToOrder, Decimal } from '../lib/calculations.js';
 import { buildDailySnapshot, buildDateRangeMatrix } from '../lib/ledger.js';
 import { explainOnHand, explainPacksOnHand, explainCostOnHand, explainDispensed, explainOrderReceived, explainSignedPacksToOrder } from '../lib/signExplain.js';
@@ -375,6 +375,7 @@ export default function Accumulator() {
   const orderSheetExportRows = orderListRows.map((r) => ({
     ndc: r.ndc,
     productName: r.product_name,
+    packSize: r.pack_size,
     recommendedPacks: r.order.recommendedPacks,
     price340b: r.price_340b,
     totalOrderCost: r.price_340b !== null && r.price_340b !== undefined ? r.order.recommendedPacks.times(r.price_340b) : null,
@@ -925,6 +926,9 @@ export default function Accumulator() {
               <div className="flex gap-2">
                 <button className="btn-secondary" onClick={() => printOrderSheet(orderSheetExportRows, orderSheetMeta)}>
                   <Printer className="h-4 w-4" /> Print
+                </button>
+                <button className="btn-secondary" onClick={() => downloadOrderSheetPdf(orderSheetExportRows, orderSheetMeta)}>
+                  <FileText className="h-4 w-4" /> Download PDF
                 </button>
                 <button className="btn-secondary" onClick={() => exportOrderSheet(orderSheetExportRows, orderSheetMeta)}>
                   <Download className="h-4 w-4" /> Export

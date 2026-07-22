@@ -1,31 +1,48 @@
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { formatCurrency, formatQty } from './calculations.js';
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+const HEADERS = ['Product Name', 'NDC', 'Pack Size', 'Packs to Order', '340B Price', 'Total Order Cost'];
+
+/** rows: {ndc, productName, packSize, recommendedPacks, price340b, totalOrderCost} — same shape used by both printOrderSheet and downloadOrderSheetPdf. */
+function toDisplayRow(r) {
+  return [
+    r.productName ?? '',
+    r.ndc ?? '',
+    r.packSize !== null && r.packSize !== undefined ? formatQty(r.packSize) : '—',
+    formatQty(r.recommendedPacks),
+    r.price340b !== null && r.price340b !== undefined ? formatCurrency(r.price340b) : '—',
+    r.totalOrderCost !== null && r.totalOrderCost !== undefined ? formatCurrency(r.totalOrderCost) : '—',
+  ];
+}
+
 /**
  * Opens a clean, print-only window containing just the replenishment order
  * sheet (rows that actually need ordering) and triggers the browser print
- * dialog — a printable/handoff-ready doc without pulling in a PDF library,
- * and without fighting the app's own CSS since it's a fully separate
- * document. rows: orderPanelRows shape (ndc, productName, recommendedPacks,
- * price340b, totalOrderCost).
+ * dialog — a printable/handoff-ready doc without fighting the app's own CSS
+ * since it's a fully separate document. rows: {ndc, productName, packSize,
+ * recommendedPacks, price340b, totalOrderCost}.
  */
 export function printOrderSheet(rows, { facilityName, pharmacyName, claimDate }) {
   const totalCost = rows.reduce((sum, r) => sum + (r.totalOrderCost ? Number(r.totalOrderCost) : 0), 0);
 
   const bodyRows = rows
-    .map(
-      (r) => `
+    .map((r) => {
+      const [name, ndc, packSize, packs, price, total] = toDisplayRow(r);
+      return `
         <tr>
-          <td>${escapeHtml(r.productName)}</td>
-          <td class="mono">${escapeHtml(r.ndc)}</td>
-          <td class="num">${escapeHtml(formatQty(r.recommendedPacks))}</td>
-          <td class="num">${r.price340b !== null && r.price340b !== undefined ? escapeHtml(formatCurrency(r.price340b)) : '—'}</td>
-          <td class="num">${r.totalOrderCost !== null ? escapeHtml(formatCurrency(r.totalOrderCost)) : '—'}</td>
-        </tr>`
-    )
+          <td>${escapeHtml(name)}</td>
+          <td class="mono">${escapeHtml(ndc)}</td>
+          <td class="num">${escapeHtml(packSize)}</td>
+          <td class="num">${escapeHtml(packs)}</td>
+          <td class="num">${escapeHtml(price)}</td>
+          <td class="num">${escapeHtml(total)}</td>
+        </tr>`;
+    })
     .join('');
 
   const html = `<!doctype html>
@@ -51,18 +68,12 @@ export function printOrderSheet(rows, { facilityName, pharmacyName, claimDate })
   <p class="meta">${escapeHtml(facilityName)} &rarr; ${escapeHtml(pharmacyName)} &middot; Claim date ${escapeHtml(claimDate)} &middot; Generated ${escapeHtml(new Date().toLocaleString())}</p>
   <table>
     <thead>
-      <tr>
-        <th>Product Name</th>
-        <th>NDC</th>
-        <th class="num">Packs to Order</th>
-        <th class="num">340B Price</th>
-        <th class="num">Total Order Cost</th>
-      </tr>
+      <tr>${HEADERS.map((h) => `<th class="${h === 'Product Name' || h === 'NDC' ? '' : 'num'}">${h}</th>`).join('')}</tr>
     </thead>
     <tbody>${bodyRows}</tbody>
     <tfoot>
       <tr>
-        <td colspan="4">Total</td>
+        <td colspan="5">Total</td>
         <td class="num">${escapeHtml(formatCurrency(totalCost))}</td>
       </tr>
     </tfoot>
@@ -76,4 +87,38 @@ export function printOrderSheet(rows, { facilityName, pharmacyName, claimDate })
   printWindow.document.close();
   printWindow.focus();
   printWindow.onload = () => printWindow.print();
+}
+
+/**
+ * Generates and downloads an actual PDF file (not a browser print dialog)
+ * of the same order sheet — for saving/emailing/attaching without needing
+ * to go through "Print -> Save as PDF" manually.
+ */
+export function downloadOrderSheetPdf(rows, { facilityName, pharmacyName, claimDate }) {
+  const totalCost = rows.reduce((sum, r) => sum + (r.totalOrderCost ? Number(r.totalOrderCost) : 0), 0);
+
+  const doc = new jsPDF({ unit: 'pt' });
+  doc.setFontSize(14);
+  doc.text('Replenishment Order Sheet', 40, 40);
+  doc.setFontSize(9);
+  doc.setTextColor(100);
+  doc.text(`${facilityName} -> ${pharmacyName} | Claim date ${claimDate} | Generated ${new Date().toLocaleString()}`, 40, 56);
+
+  autoTable(doc, {
+    startY: 72,
+    head: [HEADERS],
+    body: rows.map(toDisplayRow),
+    foot: [['Total', '', '', '', '', formatCurrency(totalCost)]],
+    styles: { fontSize: 9, cellPadding: 5 },
+    headStyles: { fillColor: [241, 245, 249], textColor: [26, 35, 50], fontStyle: 'bold' },
+    footStyles: { fillColor: [255, 255, 255], textColor: [26, 35, 50], fontStyle: 'bold', lineWidth: { top: 1 } },
+    columnStyles: {
+      2: { halign: 'right' },
+      3: { halign: 'right' },
+      4: { halign: 'right' },
+      5: { halign: 'right' },
+    },
+  });
+
+  doc.save(`Order_Sheet_${pharmacyName}_${claimDate}.pdf`);
 }
