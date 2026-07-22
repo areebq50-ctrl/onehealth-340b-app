@@ -750,7 +750,7 @@ function ReplenishmentTab({
               <table className="w-full min-w-max text-left text-sm">
                 <thead className="sticky top-0 bg-surface-alt">
                   <tr>
-                    {['Product Name', 'NDC', 'Packs to Order', '340B Price', 'Total Order Cost', 'Action'].map((h) => (
+                    {['Product Name', 'NDC', 'Pack Size', 'Packs to Order', '340B Price', 'Total Order Cost', 'Action'].map((h) => (
                       <th key={h} className="whitespace-nowrap px-4 py-3 font-semibold text-navy">
                         {h}
                       </th>
@@ -762,6 +762,7 @@ function ReplenishmentTab({
                     <tr key={r.ndc} className={i % 2 ? 'bg-surface-alt' : 'bg-white'}>
                       <td className="whitespace-nowrap px-4 py-2.5">{r.productName}</td>
                       <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs">{r.ndc}</td>
+                      <td className="whitespace-nowrap px-4 py-2.5">{r.packSize !== null && r.packSize !== undefined ? formatQty(r.packSize) : '—'}</td>
                       <td className="whitespace-nowrap px-4 py-2.5 font-semibold text-danger" title={explainRecommendedPacks(r.recommendedPacks)}>
                         {formatQty(r.recommendedPacks)}
                       </td>
