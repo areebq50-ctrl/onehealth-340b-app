@@ -67,14 +67,20 @@ export async function fetchAccumulatorRows(facilityId, pharmacyId, month, year) 
 }
 
 export async function editAccumulatorRow(row) {
+  // Numeric fields come from plain text inputs, which use '' (not null) to
+  // represent "empty" — passing '' straight through to a `numeric` RPC
+  // parameter fails in Postgres ("invalid input syntax for type numeric:
+  // \"\""), so blank strings are normalized to null here at the one choke
+  // point every edit goes through.
+  const numOrNull = (v) => (v === '' || v === null || v === undefined ? null : v);
   const { error } = await supabase.rpc('edit_accumulator_row', {
     p_id: row.id,
     p_product_name: row.product_name,
-    p_pack_size: row.pack_size,
-    p_price_340b: row.price_340b,
-    p_ppu_340b: row.ppu_340b,
+    p_pack_size: numOrNull(row.pack_size),
+    p_price_340b: numOrNull(row.price_340b),
+    p_ppu_340b: numOrNull(row.ppu_340b),
     p_exp_day: row.exp_day || null,
-    p_qty_on_hand: row.qty_on_hand,
+    p_qty_on_hand: numOrNull(row.qty_on_hand),
     p_cin: row.cin,
     p_manufacturer: row.manufacturer,
   });

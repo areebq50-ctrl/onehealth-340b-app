@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Download, Plus, Upload, FileText, CalendarRange, CalendarDays, Loader2, Lock, Pencil, Trash2, AlertTriangle, ScrollText } from 'lucide-react';
+import { Download, Plus, Upload, FileText, CalendarRange, CalendarDays, Loader2, Lock, Pencil, Trash2, AlertTriangle, ScrollText, ClipboardList, Printer } from 'lucide-react';
 import { useFacility } from '../context/FacilityContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
@@ -19,8 +19,9 @@ import {
 } from '../lib/accumulatorApi.js';
 import { readAccumulatorWorkbook, parseAccumulatorSheet } from '../parsers/accumulatorXlsxParser.js';
 import { parseCardinalHealthInvoice } from '../parsers/cardinalHealthInvoiceParser.js';
-import { exportAccumulator, exportAccumulatorGrid } from '../lib/excelExport.js';
-import { formatCurrency, formatQty, packsOnHand, costOnHand340b, Decimal } from '../lib/calculations.js';
+import { exportAccumulator, exportAccumulatorGrid, exportOrderSheet } from '../lib/excelExport.js';
+import { printOrderSheet } from '../lib/printOrderSheet.js';
+import { formatCurrency, formatQty, packsOnHand, costOnHand340b, packsToOrder, Decimal } from '../lib/calculations.js';
 import { buildDailySnapshot, buildDateRangeMatrix } from '../lib/ledger.js';
 import { explainOnHand, explainPacksOnHand, explainCostOnHand, explainDispensed, explainOrderReceived, explainSignedPacksToOrder } from '../lib/signExplain.js';
 import { normalizeNdc } from '../lib/ndc.js';
@@ -129,7 +130,7 @@ export default function Accumulator() {
   const [editingRow, setEditingRow] = useState(null);
   const [savingEdit, setSavingEdit] = useState(false);
   const [ledgerRow, setLedgerRow] = useState(null);
-  const [view, setView] = useState('master'); // 'master' | 'daily'
+  const [view, setView] = useState('master'); // 'master' | 'daily' | 'orderlist'
   const [dailyLayout, setDailyLayout] = useState('single'); // 'single' | 'grid'
   const [dailyEntries, setDailyEntries] = useState([]);
   const [loadingDaily, setLoadingDaily] = useState(false);
@@ -342,6 +343,29 @@ export default function Accumulator() {
       return true;
     });
   }, [rows, filters]);
+
+  // Clean NDC | Product Name | Pack Size | Packs to Order list — every NDC
+  // currently needing an order, whole packs only (rounded up), matching how
+  // this gets worked out by hand instead of the full 13-column master table.
+  const orderListRows = useMemo(() => {
+    return rows
+      .map((r) => ({ ...r, order: packsToOrder(r.qty_on_hand, r.pack_size) }))
+      .filter((r) => r.order.recommendedPacks?.gt(0))
+      .sort((a, b) => (a.product_name ?? '').localeCompare(b.product_name ?? ''));
+  }, [rows]);
+
+  const orderSheetMeta = {
+    facilityName: selectedFacility?.name ?? 'facility',
+    pharmacyName: isAllPharmacies ? 'All Pharmacies' : selectedPharmacy?.name ?? 'pharmacy',
+    claimDate: period ? `${MONTH_NAMES[period.month - 1]} ${period.year}` : '',
+  };
+  const orderSheetExportRows = orderListRows.map((r) => ({
+    ndc: r.ndc,
+    productName: r.product_name,
+    recommendedPacks: r.order.recommendedPacks,
+    price340b: r.price_340b,
+    totalOrderCost: r.price_340b !== null && r.price_340b !== undefined ? r.order.recommendedPacks.times(r.price_340b) : null,
+  }));
 
   // Same expiry/manufacturer filters as the master view, but shortageOnly is
   // applied after the snapshot below (against that day's Ending Balance,
@@ -700,6 +724,15 @@ export default function Accumulator() {
                 >
                   <CalendarDays className="h-3.5 w-3.5" /> Daily Ledger
                 </button>
+                <button
+                  className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                    view === 'orderlist' ? 'bg-navy text-white' : 'text-gray-500 hover:text-navy'
+                  }`}
+                  onClick={() => setView('orderlist')}
+                  title="Just NDC, Product Name, Pack Size, and Packs to Order — everything currently needing an order, nothing else"
+                >
+                  <ClipboardList className="h-3.5 w-3.5" /> Order List
+                </button>
               </div>
             </div>
           )}
@@ -801,6 +834,8 @@ export default function Accumulator() {
           <span className="ml-auto text-xs text-gray-400">
             {view === 'daily'
               ? `${(dailyLayout === 'grid' ? gridRows : dailyRows).length} of ${rows.length} rows`
+              : view === 'orderlist'
+              ? `${orderListRows.length} need an order`
               : `${filteredRows.length} of ${rows.length} rows`}
           </span>
         </div>
@@ -845,6 +880,43 @@ export default function Accumulator() {
         ) : (
           <DataTable columns={dailyColumns} rows={dailyRows} rowKey={(r) => r.id} searchPlaceholder="Search NDC, product name, or manufacturer..." />
         )
+      ) : view === 'orderlist' ? (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm text-gray-500">Every NDC currently needing an order — whole packs only, nothing else.</p>
+            {orderListRows.length > 0 && (
+              <div className="flex gap-2">
+                <button className="btn-secondary" onClick={() => printOrderSheet(orderSheetExportRows, orderSheetMeta)}>
+                  <Printer className="h-4 w-4" /> Print
+                </button>
+                <button className="btn-secondary" onClick={() => exportOrderSheet(orderSheetExportRows, orderSheetMeta)}>
+                  <Download className="h-4 w-4" /> Export
+                </button>
+              </div>
+            )}
+          </div>
+          {orderListRows.length === 0 ? (
+            <EmptyState title="Nothing needs ordering right now" message="Every NDC in this period is balanced or in surplus." />
+          ) : (
+            <DataTable
+              columns={[
+                { key: 'ndc', label: 'NDC', sortable: true, render: (r) => <span className="font-mono text-xs">{r.ndc}</span> },
+                { key: 'product_name', label: 'Product Name', sortable: true },
+                { key: 'pack_size', label: 'Pack Size', sortable: true, accessor: (r) => Number(r.pack_size ?? 0) },
+                {
+                  key: 'packsToOrder',
+                  label: 'Packs to Order',
+                  sortable: true,
+                  accessor: (r) => Number(r.order.recommendedPacks ?? 0),
+                  render: (r) => <span className="font-semibold text-danger">{formatQty(r.order.recommendedPacks)}</span>,
+                },
+              ]}
+              rows={orderListRows}
+              rowKey={(r) => r.id}
+              searchPlaceholder="Search NDC or product name..."
+            />
+          )}
+        </div>
       ) : filteredRows.length === 0 ? (
         <EmptyState title="No rows match these filters" message="Try clearing a filter above." />
       ) : (
