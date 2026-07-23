@@ -833,6 +833,23 @@ begin
     raise exception 'This accumulator period is closed (historical) and cannot be deleted from';
   end if;
 
+  -- Claim line items reference the accumulator only by (ndc, facility,
+  -- pharmacy, month, year), not this specific row's id. If this NDC still
+  -- has claim activity for this period, deleting (and later re-importing)
+  -- this row would leave that claim's reversal/delete math applying
+  -- against a brand-new balance instead of the one it actually modified —
+  -- silently corrupting the balance instead of starting it fresh. Force
+  -- the claim(s) to be deleted first.
+  if exists (
+    select 1 from public.claim_line_items cli
+    join public.claims c on c.id = cli.claim_id
+    where cli.ndc = v_row.ndc and cli.matched = true
+      and c.facility_id = v_row.facility_id and c.pharmacy_id = v_row.pharmacy_id
+      and extract(month from c.claim_date) = v_row.month and extract(year from c.claim_date) = v_row.year
+  ) then
+    raise exception 'NDC % has claim activity this period — delete the claim(s) for this period first, then delete this accumulator row. Deleting the row while claims still reference it would corrupt the balance on re-import.', v_row.ndc;
+  end if;
+
   insert into public.accumulator_audit_log
     (user_id, claim_id, ndc, product_name, prior_qty, qty_dispensed, new_qty, reimbursement_amount, action_type, facility_id, pharmacy_id)
   values
@@ -1039,6 +1056,20 @@ begin
 
   if not public.is_latest_period(p_facility_id, p_pharmacy_id, p_month, p_year) then
     raise exception 'Cannot import into a closed historical period';
+  end if;
+
+  -- A bulk re-import overwrites qty_on_hand outright (see the upsert
+  -- below). If any claim still exists for this period, that claim's
+  -- dispense was applied against the OLD balance — overwriting it here
+  -- breaks the claim's later reversal math and silently corrupts the
+  -- balance instead of giving a genuinely fresh starting point. Require
+  -- claims for this period to be deleted first.
+  if exists (
+    select 1 from public.claims
+    where facility_id = p_facility_id and pharmacy_id = p_pharmacy_id
+      and extract(month from claim_date) = p_month and extract(year from claim_date) = p_year
+  ) then
+    raise exception 'Claims exist for %/% — delete the claim(s) for this period first, then re-import the accumulator. Importing over an accumulator that still has claims applied to it would corrupt the balance.', p_month, p_year;
   end if;
 
   for v_row in select * from jsonb_array_elements(p_rows)
@@ -1852,6 +1883,19 @@ begin
     raise exception 'This accumulator period is closed (historical) and cannot be deleted';
   end if;
 
+  -- Same reasoning as delete_accumulator_row: wiping the whole period's
+  -- balances while claims for that period still exist means any later
+  -- claim deletion (or a freshly re-imported balance) would silently
+  -- mix stale claim math into the new starting balance. Require a truly
+  -- blank slate: claims for this period must be deleted first.
+  if exists (
+    select 1 from public.claims
+    where facility_id = p_facility_id and pharmacy_id = p_pharmacy_id
+      and extract(month from claim_date) = p_month and extract(year from claim_date) = p_year
+  ) then
+    raise exception 'Claims exist for %/% — delete the claim(s) for this period first, then delete the accumulator. Wiping the accumulator while claims still reference it would corrupt the balance on re-import.', p_month, p_year;
+  end if;
+
   for v_row in
     select * from public.accumulator
     where facility_id = p_facility_id and pharmacy_id = p_pharmacy_id and month = p_month and year = p_year
@@ -1872,6 +1916,59 @@ $$;
 
 revoke all on function public.delete_accumulator_period from public;
 grant execute on function public.delete_accumulator_period to authenticated;
+
+-- ============================================================================
+-- RPC: reset_period_data
+-- Admin-only, one facility+pharmacy+month+year at a time. A single button
+-- for "start this period completely over": deletes every claim for the
+-- period first (each one properly reversed out of the accumulator via
+-- delete_claim, exactly like deleting them by hand one at a time), THEN
+-- deletes the accumulator rows for the period (delete_accumulator_period).
+-- Doing it in this order, atomically, is what the guard checks added to
+-- delete_accumulator_row / delete_accumulator_period / import_accumulator_rows
+-- above require anyway — this just does both steps in the right order in
+-- one call instead of relying on a human to remember the order.
+-- ============================================================================
+create or replace function public.reset_period_data(
+  p_facility_id uuid,
+  p_pharmacy_id uuid,
+  p_month integer,
+  p_year integer
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_claim record;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins may reset a period';
+  end if;
+
+  if p_pharmacy_id is null then
+    raise exception 'A specific pharmacy must be selected before resetting a period';
+  end if;
+
+  if not public.is_latest_period(p_facility_id, p_pharmacy_id, p_month, p_year) then
+    raise exception 'This period is closed (historical) and cannot be reset';
+  end if;
+
+  for v_claim in
+    select id from public.claims
+    where facility_id = p_facility_id and pharmacy_id = p_pharmacy_id
+      and extract(month from claim_date) = p_month and extract(year from claim_date) = p_year
+  loop
+    perform public.delete_claim(v_claim.id);
+  end loop;
+
+  perform public.delete_accumulator_period(p_facility_id, p_pharmacy_id, p_month, p_year);
+end;
+$$;
+
+revoke all on function public.reset_period_data from public;
+grant execute on function public.reset_period_data to authenticated;
 
 -- ============================================================================
 -- PATCH: bulk-receive a wholesaler invoice/order into the accumulator.

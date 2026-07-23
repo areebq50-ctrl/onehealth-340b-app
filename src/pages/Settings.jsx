@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Loader2, UserPlus, Building2, Store, ToggleLeft, ToggleRight, Pencil, Trash2 } from 'lucide-react';
+import { Loader2, UserPlus, Building2, Store, ToggleLeft, ToggleRight, Pencil, Trash2, AlertTriangle, RotateCcw } from 'lucide-react';
 import { useFacility } from '../context/FacilityContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
@@ -14,7 +14,10 @@ import {
   updatePharmacy,
   deletePharmacy,
 } from '../lib/settingsApi.js';
+import { fetchPeriods, countClaimsForPeriod, countAccumulatorRowsForPeriod, resetPeriodData } from '../lib/accumulatorApi.js';
 import { SkeletonTable } from '../components/common/Skeleton.jsx';
+
+const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
 function UsersPanel() {
   const toast = useToast();
@@ -399,6 +402,174 @@ function PharmaciesPanel() {
   );
 }
 
+function ResetPeriodPanel() {
+  const { facilities, pharmacies } = useFacility();
+  const toast = useToast();
+  const [facilityId, setFacilityId] = useState('');
+  const [pharmacyId, setPharmacyId] = useState('');
+  const [periods, setPeriods] = useState([]);
+  const [period, setPeriod] = useState(''); // "month-year"
+  const [loadingPeriods, setLoadingPeriods] = useState(false);
+  const [counts, setCounts] = useState(null); // { claims, accumulatorRows }
+  const [loadingCounts, setLoadingCounts] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
+  const [resetting, setResetting] = useState(false);
+
+  const pharmaciesForFacility = pharmacies.filter((p) => (p.pharmacy_facilities ?? []).some((pf) => pf.facility_id === facilityId));
+  const selectedPharmacy = pharmacies.find((p) => p.id === pharmacyId) ?? null;
+
+  useEffect(() => {
+    setPharmacyId('');
+    setPeriods([]);
+    setPeriod('');
+    setCounts(null);
+  }, [facilityId]);
+
+  useEffect(() => {
+    setPeriod('');
+    setCounts(null);
+    if (!facilityId || !pharmacyId) {
+      setPeriods([]);
+      return;
+    }
+    let cancelled = false;
+    setLoadingPeriods(true);
+    fetchPeriods(facilityId, pharmacyId)
+      .then((p) => {
+        if (!cancelled) setPeriods(p);
+      })
+      .catch((err) => toast.error(`Failed to load periods: ${err.message}`))
+      .finally(() => {
+        if (!cancelled) setLoadingPeriods(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [facilityId, pharmacyId]);
+
+  useEffect(() => {
+    setConfirmText('');
+    setCounts(null);
+    if (!period) return;
+    const [month, year] = period.split('-').map(Number);
+    let cancelled = false;
+    setLoadingCounts(true);
+    Promise.all([countClaimsForPeriod(facilityId, pharmacyId, month, year), countAccumulatorRowsForPeriod(facilityId, pharmacyId, month, year)])
+      .then(([claims, accumulatorRows]) => {
+        if (!cancelled) setCounts({ claims, accumulatorRows });
+      })
+      .catch((err) => toast.error(`Failed to load counts: ${err.message}`))
+      .finally(() => {
+        if (!cancelled) setLoadingCounts(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [period]);
+
+  const expectedConfirm = selectedPharmacy ? `RESET ${selectedPharmacy.name.toUpperCase()}` : '';
+  const canReset = period && counts && confirmText.trim().toUpperCase() === expectedConfirm && !resetting;
+
+  async function handleReset() {
+    if (!canReset) return;
+    const [month, year] = period.split('-').map(Number);
+    setResetting(true);
+    try {
+      await resetPeriodData({ facilityId, pharmacyId, month, year });
+      toast.success(`${selectedPharmacy.name} — ${MONTH_NAMES[month - 1]} ${year} reset to blank. Re-import the accumulator, then claims, then invoices.`);
+      setPeriod('');
+      setPeriods((prev) => prev.filter((p) => !(p.month === month && p.year === year)));
+      setCounts(null);
+      setConfirmText('');
+    } catch (err) {
+      toast.error(`Reset failed: ${err.message}`);
+    } finally {
+      setResetting(false);
+    }
+  }
+
+  return (
+    <div className="card border border-danger/20 p-6">
+      <div className="mb-4 flex items-start gap-3">
+        <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-danger" />
+        <div>
+          <h2 className="text-base font-semibold text-navy">Reset Period Data</h2>
+          <p className="text-sm text-gray-500">
+            Wipes every claim and accumulator row for one pharmacy&apos;s period, in the correct order, so a re-import starts from
+            a genuinely blank slate instead of adding on top of leftover state. Only works on the current (latest, non-historical)
+            period. This cannot be undone.
+          </p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <label className="label-text">Facility</label>
+          <select className="input-field" value={facilityId} onChange={(e) => setFacilityId(e.target.value)}>
+            <option value="">Select facility…</option>
+            {facilities.map((f) => (
+              <option key={f.id} value={f.id}>{f.name}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="label-text">Pharmacy</label>
+          <select className="input-field" value={pharmacyId} onChange={(e) => setPharmacyId(e.target.value)} disabled={!facilityId}>
+            <option value="">Select pharmacy…</option>
+            {pharmaciesForFacility.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="label-text">Period</label>
+          <select className="input-field" value={period} onChange={(e) => setPeriod(e.target.value)} disabled={!pharmacyId || loadingPeriods}>
+            <option value="">{loadingPeriods ? 'Loading…' : 'Select period…'}</option>
+            {periods.map((p) => (
+              <option key={`${p.month}-${p.year}`} value={`${p.month}-${p.year}`}>
+                {MONTH_NAMES[p.month - 1]} {p.year}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {period && (
+        <div className="mt-4 rounded-lg border border-gray-100 bg-surface-alt p-4 text-sm">
+          {loadingCounts ? (
+            <span className="flex items-center gap-2 text-gray-500"><Loader2 className="h-4 w-4 animate-spin" /> Loading what will be deleted…</span>
+          ) : counts ? (
+            <>
+              <p className="font-medium text-navy">This will permanently delete:</p>
+              <ul className="mt-1 list-disc pl-5 text-gray-600">
+                <li>{counts.claims} claim{counts.claims === 1 ? '' : 's'} (and every line item within them)</li>
+                <li>{counts.accumulatorRows} accumulator row{counts.accumulatorRows === 1 ? '' : 's'}</li>
+              </ul>
+              <div className="mt-3">
+                <label className="label-text">
+                  Type <span className="font-mono font-semibold text-danger">{expectedConfirm}</span> to confirm
+                </label>
+                <input
+                  className="input-field"
+                  value={confirmText}
+                  onChange={(e) => setConfirmText(e.target.value)}
+                  placeholder={expectedConfirm}
+                />
+              </div>
+              <button className="btn-danger mt-3" onClick={handleReset} disabled={!canReset}>
+                {resetting ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+                Reset this period
+              </button>
+            </>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Settings() {
   return (
     <div className="space-y-6">
@@ -411,6 +582,7 @@ export default function Settings() {
         <FacilitiesPanel />
         <PharmaciesPanel />
       </div>
+      <ResetPeriodPanel />
     </div>
   );
 }

@@ -104,6 +104,24 @@ export async function deleteAccumulatorPeriod({ facilityId, pharmacyId, month, y
   return data;
 }
 
+/**
+ * Full reset of one facility+pharmacy+period: deletes every claim for the
+ * period (each properly reversed out of the accumulator first, same as
+ * deleting them one at a time), THEN deletes the accumulator rows for the
+ * period — always in the correct order, atomically, so the period ends up
+ * genuinely blank instead of a re-import silently landing on top of stale
+ * claim math. Admin-only, latest period only.
+ */
+export async function resetPeriodData({ facilityId, pharmacyId, month, year }) {
+  const { error } = await supabase.rpc('reset_period_data', {
+    p_facility_id: facilityId,
+    p_pharmacy_id: pharmacyId,
+    p_month: month,
+    p_year: year,
+  });
+  if (error) throw error;
+}
+
 /** Count of claims already processed for a facility+pharmacy+period — used to warn before a bulk accumulator-period delete. */
 export async function countClaimsForPeriod(facilityId, pharmacyId, month, year) {
   const from = `${year}-${String(month).padStart(2, '0')}-01`;
@@ -116,6 +134,19 @@ export async function countClaimsForPeriod(facilityId, pharmacyId, month, year) 
     .eq('pharmacy_id', pharmacyId)
     .gte('claim_date', from)
     .lte('claim_date', to);
+  if (error) throw error;
+  return count ?? 0;
+}
+
+/** Count of accumulator rows on record for a facility+pharmacy+period — paired with countClaimsForPeriod to preview a reset before running it. */
+export async function countAccumulatorRowsForPeriod(facilityId, pharmacyId, month, year) {
+  const { count, error } = await supabase
+    .from('accumulator')
+    .select('id', { count: 'exact', head: true })
+    .eq('facility_id', facilityId)
+    .eq('pharmacy_id', pharmacyId)
+    .eq('month', month)
+    .eq('year', year);
   if (error) throw error;
   return count ?? 0;
 }
