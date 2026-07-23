@@ -118,23 +118,27 @@ export function costOnHand340b(qtyOnHand, ppu) {
 }
 
 /**
- * Replenishment (packs to order) business rule.
+ * Replenishment (packs to order) business rule — confirmed directly against
+ * the pharmacy's own master spreadsheet (their "New Balance" / "Packs to
+ * order" columns), which floors rather than ceils, and only orders once the
+ * shortfall reaches a FULL pack:
  *
  * Under the app's deficit-framed convention (positive = shortage, negative
  * = surplus):
  * Shortage       = max(0, qtyAfter)                -- only when on-hand went positive (short)
  * Exact Packs    = Shortage ÷ Pack Size            -- e.g. 1.25 packs, shown as-is, never rounded
- * Recommended    = ceil(Exact Packs)               -- whole packs to actually order (can't order 1.25)
+ * Recommended    = floor(Exact Packs)              -- whole packs already short; a partial pack (e.g. 0.7) isn't ordered yet, it carries forward
  *
- * If qtyAfter is <= 0 (surplus or exactly balanced), all three are zero — a
- * negative/zero balance never produces a negative "packs to order".
+ * If Exact Packs is < 1 (shortfall hasn't reached a full pack yet) or
+ * qtyAfter is <= 0 (surplus or exactly balanced), Recommended is 0 — this
+ * NDC doesn't show up on an order list yet, even though Shortage/Exact
+ * Packs may still be a small positive number. That's intentional: ordering
+ * only kicks in once you're behind by at least one whole pack, matching
+ * "filter Packs to Order >= 1, whatever's left is what gets ordered."
  *
- * This is a documented default (no prior business rule existed in the app).
- * If your actual purchasing policy differs (e.g. reordering before hitting
- * zero, or a different rounding rule), this is the one function to change.
- *
- * Example: qtyAfter=60, packSize=90 -> shortage=60, exactPacks=0.6667, recommendedPacks=1
- * Example: qtyAfter=34, packSize=120 -> shortage=34, exactPacks=0.2833, recommendedPacks=1
+ * Example: qtyAfter=60, packSize=30 -> shortage=60, exactPacks=2,      recommendedPacks=2
+ * Example: qtyAfter=34, packSize=120 -> shortage=34, exactPacks=0.2833, recommendedPacks=0 (not a full pack yet)
+ * Example: qtyAfter=120, packSize=100 -> shortage=120, exactPacks=1.2,  recommendedPacks=1
  * Example: qtyAfter=-79, packSize=110 -> shortage=0,  exactPacks=0,      recommendedPacks=0
  */
 export function packsToOrder(qtyAfter, packSize) {
@@ -152,7 +156,7 @@ export function packsToOrder(qtyAfter, packSize) {
 
   const shortage = qtyD;
   const exactPacks = shortage.dividedBy(packSizeD);
-  const recommendedPacks = exactPacks.ceil();
+  const recommendedPacks = exactPacks.floor();
   return { shortage, exactPacks, recommendedPacks, flagged: false, reason: null };
 }
 
