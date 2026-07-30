@@ -85,17 +85,38 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     let mounted = true;
+    let settledInit = false;
 
-    console.log('[Auth] init: fetching existing session'); // eslint-disable-line no-console
-    supabase.auth.getSession().then(async ({ data: { session: initialSession }, error: sessionError }) => {
-      if (!mounted) return;
-      if (sessionError) console.error('[Auth] init: getSession error:', sessionError.message); // eslint-disable-line no-console
-      console.log('[Auth] init: initial session =', initialSession ? `user ${initialSession.user.id}` : 'none'); // eslint-disable-line no-console
+    async function applyInitialSession(initialSession, sessionError, source) {
+      if (!mounted || settledInit) return;
+      settledInit = true;
+      if (sessionError) console.error(`[Auth] init (${source}): getSession error:`, sessionError.message); // eslint-disable-line no-console
+      console.log(`[Auth] init (${source}): initial session =`, initialSession ? `user ${initialSession.user.id}` : 'none'); // eslint-disable-line no-console
       setSession(initialSession);
       await loadProfile(initialSession?.user?.id);
-      console.log('[Auth] init: complete'); // eslint-disable-line no-console
+      console.log(`[Auth] init (${source}): complete`); // eslint-disable-line no-console
       setLoading(false);
-    });
+    }
+
+    console.log('[Auth] init: fetching existing session'); // eslint-disable-line no-console
+    supabase.auth
+      .getSession()
+      .then(({ data: { session: initialSession }, error: sessionError }) => applyInitialSession(initialSession, sessionError, 'getSession'))
+      .catch((err) => applyInitialSession(null, err, 'getSession-threw'));
+
+    // Defensive timeout: supabase-js's getSession() coordinates across tabs
+    // via a browser lock, and on a truly cold load (e.g. opening a
+    // bookmark after the browser was fully closed, or a flaky first
+    // network request) it can occasionally hang indefinitely instead of
+    // resolving — which previously left the app stuck on the loading
+    // spinner forever, recoverable only by a manual reload. If it hasn't
+    // resolved within 8s, stop waiting and let routing proceed as
+    // signed-out; `settledInit` above means the real getSession() result is
+    // simply ignored if it eventually does arrive late, but a session that
+    // genuinely exists still flows in moments later via onAuthStateChange
+    // below (which sets `session` unconditionally on every event), so nothing
+    // is lost — the app just stops blocking on it.
+    const timeoutId = setTimeout(() => applyInitialSession(null, null, 'timeout-fallback'), 8000);
 
     const { data: listener } = supabase.auth.onAuthStateChange(async (event, newSession) => {
       if (!mounted) return;
@@ -128,6 +149,7 @@ export function AuthProvider({ children }) {
 
     return () => {
       mounted = false;
+      clearTimeout(timeoutId);
       listener.subscription.unsubscribe();
     };
   }, [loadProfile]);
