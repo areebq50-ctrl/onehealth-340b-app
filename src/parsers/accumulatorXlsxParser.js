@@ -7,8 +7,8 @@ const COLUMN_ALIASES = {
   productName: ['product name', 'drug name', 'product', 'description'],
   packSize: ['pack size', 'packsize'],
   expDay: ['exp day', 'expiration', 'exp date', 'expiry'],
-  price340b: ['340b price', 'price 340b', 'price'],
-  ppu340b: ['340b ppu', 'ppu 340b', 'ppu'],
+  price340b: ['340b price', 'price 340b', 'price', 'contract price'],
+  ppu340b: ['340b ppu', 'ppu 340b', 'ppu', 'unit cost', 'cost per unit', 'per unit cost'],
   cin: ['cin'],
   manufacturer: ['manufacturer', 'mfr'],
 };
@@ -183,10 +183,25 @@ export function parseAccumulatorSheet(workbook, sheetName) {
     return { error: 'No valid rows found after validation.', rows: [], skippedRows };
   }
 
+  // Surfaces exactly which optional columns were (and weren't) found, and
+  // under what header text — so a column the parser didn't recognize (e.g.
+  // a 340B price column titled something COLUMN_ALIASES doesn't cover)
+  // shows up as a visible "not found" at import time, instead of silently
+  // importing every row with a blank price and only being noticed later on
+  // an order sheet showing "$0.00" everywhere with no explanation why.
+  const detectedColumns = {
+    price340b: colIndex.price340b >= 0 ? String(headerRow[colIndex.price340b] ?? '').trim() : null,
+    ppu340b: colIndex.ppu340b >= 0 ? String(headerRow[colIndex.ppu340b] ?? '').trim() : null,
+    expDay: colIndex.expDay >= 0 ? String(headerRow[colIndex.expDay] ?? '').trim() : null,
+    cin: colIndex.cin >= 0 ? String(headerRow[colIndex.cin] ?? '').trim() : null,
+    manufacturer: colIndex.manufacturer >= 0 ? String(headerRow[colIndex.manufacturer] ?? '').trim() : null,
+  };
+
   return {
     error: null,
     rows,
     skippedRows,
+    detectedColumns,
     // Best-effort DEFAULT for the convention toggle — a raw "Qty on Hand"
     // -like header suggests negating (to match the app's native deficit-
     // framed convention), a "New Balance"-like header (with no raw column

@@ -1366,6 +1366,29 @@ function ImportModal({ open, onClose, facilityId, pharmacyId, period, onImported
             {parsed.rows.length} valid rows parsed{parsed.skippedRows.length > 0 ? `, ${parsed.skippedRows.length} skipped` : ''} from sheet
             &quot;{selectedSheet}&quot;. Review before confirming — this will upsert into {MONTH_NAMES[month - 1]} {year} for this pharmacy.
           </p>
+          <div className="mb-3 rounded-lg border border-gray-200 bg-surface-alt p-3 text-xs text-gray-600">
+            <p className="mb-1 font-semibold text-navy">Optional columns detected in this file:</p>
+            <div className="flex flex-wrap gap-x-4 gap-y-1">
+              {[
+                ['340B Price', parsed.detectedColumns.price340b],
+                ['340B PPU', parsed.detectedColumns.ppu340b],
+                ['Exp Day', parsed.detectedColumns.expDay],
+                ['CIN', parsed.detectedColumns.cin],
+                ['Manufacturer', parsed.detectedColumns.manufacturer],
+              ].map(([label, headerText]) => (
+                <span key={label} className={headerText ? 'text-gray-600' : 'font-medium text-warning'}>
+                  {label}: {headerText ? `"${headerText}"` : 'not found'}
+                </span>
+              ))}
+            </div>
+            {(!parsed.detectedColumns.price340b || !parsed.detectedColumns.ppu340b) && (
+              <p className="mt-1.5 text-warning">
+                Missing 340B Price or PPU means every row imports with no cost data — Total Order Cost will show as blank/$0 on
+                order sheets. If your file has this column under a different header name, rename it to include the word
+                &quot;price&quot; or &quot;PPU&quot;/&quot;unit cost&quot; and re-upload.
+              </p>
+            )}
+          </div>
           <div className="mb-3 rounded-lg border border-teal-100 bg-teal-50 p-3 text-sm text-teal-800">
             <p className="font-semibold">
               This file&apos;s &quot;{parsed.qtyOnHandColumnLabel}&quot; column — what does a NEGATIVE value mean?

@@ -480,6 +480,14 @@ function OrderRow({ row, onOrderConfirmed, orderingId, setOrderingId, claim }) {
       toast.error('Enter a positive qty ordered.');
       return;
     }
+    if (
+      !window.confirm(
+        `This immediately reduces ${row.ndc}'s shortage by ${qtyNum} units, as if that stock has already arrived. ` +
+          `Only use this if there's no wholesaler invoice to upload for it — if you're going to upload the invoice for this order later, ` +
+          `don't confirm here too, or the received quantity will be counted twice. Continue?`
+      )
+    )
+      return;
     setSaving(true);
     try {
       const accRow = await findAccumulatorRow(
@@ -491,7 +499,7 @@ function OrderRow({ row, onOrderConfirmed, orderingId, setOrderingId, claim }) {
       );
       if (!accRow) throw new Error('Accumulator row not found for this NDC/period.');
       await confirmReplenishmentOrder({ accumulatorId: accRow.id, qtyOrdered: qtyNum });
-      toast.success(`Order logged for ${row.ndc} — running balance updated.`);
+      toast.success(`${row.ndc} marked received — running balance updated.`);
       setOrderingId(null);
       setQty('');
       onOrderConfirmed();
@@ -504,8 +512,8 @@ function OrderRow({ row, onOrderConfirmed, orderingId, setOrderingId, claim }) {
 
   if (!isOrdering) {
     return (
-      <button className="btn-secondary" onClick={() => setOrderingId(row.ndc)}>
-        Mark as Ordered
+      <button className="btn-secondary" onClick={() => setOrderingId(row.ndc)} title="Only for orders you won't also upload a wholesaler invoice for">
+        Mark as Received (Manual)
       </button>
     );
   }

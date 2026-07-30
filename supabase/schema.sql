@@ -1982,6 +1982,12 @@ grant execute on function public.reset_period_data to authenticated;
 -- (e.g. a historical/closed period) rolls back every row this call would
 -- have touched, so an invoice is never half-applied.
 -- ============================================================================
+-- Proper column instead of a string mixed into `notes` — lets
+-- receive_invoice_bulk check for a duplicate upload of the same invoice
+-- (see check below) instead of every invoice number being an unindexed,
+-- unqueryable substring.
+alter table public.accumulator_orders add column if not exists invoice_number text;
+
 create or replace function public.receive_invoice_bulk(
   p_facility_id uuid,
   p_pharmacy_id uuid,
@@ -2020,6 +2026,22 @@ begin
     raise exception 'No invoice lines supplied';
   end if;
 
+  -- Re-uploading the exact same invoice (e.g. after the page seemed to
+  -- hang and someone tried again, not realizing the first upload actually
+  -- went through) would silently double-subtract every line's quantity —
+  -- looking like a second shipment arrived when it didn't. Only checked
+  -- when an invoice number was actually entered (it's an optional manual
+  -- field), scoped to this facility+pharmacy.
+  if p_invoice_number is not null and trim(p_invoice_number) <> '' then
+    if exists (
+      select 1 from public.accumulator_orders
+      where facility_id = p_facility_id and pharmacy_id = p_pharmacy_id
+        and invoice_number = trim(p_invoice_number)
+    ) then
+      raise exception 'Invoice % has already been received for this pharmacy. If this is genuinely a different invoice, use a different invoice number — if you''re re-uploading the same one by mistake, no action is needed, it was already applied.', trim(p_invoice_number);
+    end if;
+  end if;
+
   for v_line in select * from jsonb_array_elements(p_lines)
   loop
     v_order_qty := (v_line->>'qty_ordered')::numeric;
@@ -2056,10 +2078,10 @@ begin
     where id = v_row.id;
 
     insert into public.accumulator_orders
-      (accumulator_id, ndc, product_name, facility_id, pharmacy_id, month, year, qty_ordered, packs_ordered, unit_cost_340b, total_cost, ordered_by, notes)
+      (accumulator_id, ndc, product_name, facility_id, pharmacy_id, month, year, qty_ordered, packs_ordered, unit_cost_340b, total_cost, ordered_by, notes, invoice_number)
     values
       (v_row.id, v_row.ndc, v_row.product_name, v_row.facility_id, v_row.pharmacy_id, v_row.month, v_row.year,
-       v_order_qty, v_packs, v_unit_cost, v_cost, v_user_id, nullif(trim(v_order_notes), ''));
+       v_order_qty, v_packs, v_unit_cost, v_cost, v_user_id, nullif(trim(v_order_notes), ''), nullif(trim(p_invoice_number), ''));
 
     insert into public.accumulator_audit_log
       (user_id, claim_id, ndc, product_name, prior_qty, qty_dispensed, new_qty, reimbursement_amount, action_type, facility_id, pharmacy_id)

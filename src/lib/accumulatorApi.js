@@ -224,7 +224,7 @@ export async function resolveUnmatchedLine({
   if (error) throw error;
 }
 
-/** Marks a replenishment order as placed/received: adds qtyOrdered back into the running balance and logs it. */
+/** Manually marks qtyOrdered as RECEIVED right now (subtracts it back into the running balance and logs it) — for orders with no wholesaler invoice to upload. Applying this AND later uploading the real invoice for the same order double-counts the received qty. */
 export async function confirmReplenishmentOrder({ accumulatorId, qtyOrdered, notes }) {
   const { data, error } = await supabase.rpc('confirm_replenishment_order', {
     p_accumulator_id: accumulatorId,
