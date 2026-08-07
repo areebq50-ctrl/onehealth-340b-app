@@ -101,6 +101,58 @@ The app runs at `http://localhost:5173`.
 4. Deploy. Do **not** add `GROQ_API_KEY` or the Supabase service role
    key to Vercel — those belong only in Supabase Edge Function secrets.
 
+## 6. Ownership handoff / continuity
+
+This app was built by an intern, for a hand-off to a permanent owner
+before the internship ends. There is no special "connector" between any
+particular AI coding tool and this repo — anyone (or any Claude Code
+session) with the access below can pick up exactly where the last person
+left off, because everything durable lives in this repo, the Supabase
+project, and the deployment — not in any one person's account or any one
+chat conversation.
+
+**Three things need an owner who isn't a departing intern:**
+
+1. **GitHub repo** — transfer ownership (Settings → Danger Zone) or add
+   the new owner as a collaborator/org member with admin rights.
+2. **Supabase project** — add the new owner as an Owner of the Supabase
+   Organization this project lives in. The project itself (URL, keys)
+   doesn't need to change — only who has access to it.
+3. **Vercel project** — same idea: add the new owner to the Vercel
+   project/team. Verify its GitHub integration still has access if the
+   repo's location changes.
+
+None of the above requires touching any API keys or env vars — those live
+with the Supabase/Vercel projects themselves, not with whoever's logged in.
+The **one exception**: `GROQ_API_KEY` (see `.env.example`) is a personal
+key from whoever signed up at console.groq.com — if that was a personal
+account rather than the company's, it can stop working once that person's
+access lapses, even though nothing else about the app changes. Check this
+before an ownership handoff completes.
+
+**The one manual step that never automates**: nobody (not even this AI
+assistant, across this entire project) has ever had direct database
+execution access to the live Supabase project. Every change to
+`supabase/schema.sql` is inert until someone actually pastes it into the
+Supabase SQL Editor and runs it — pulling the latest code from GitHub does
+**not** update the live database by itself. If a "function not found" or
+"column does not exist" error ever shows up after pulling new code, this
+is almost always why — re-run `schema.sql` (it's idempotent, safe to
+re-run anytime) before assuming it's a real bug.
+
+`supabase/migration_flip_sign_convention.sql` and
+`supabase/cleanup_lawrence_house_july_2026.sql` are **one-time** scripts,
+already run — they're kept in the repo for a historical record, not meant
+to be re-run. Only `schema.sql` needs re-running after a pull.
+
+**Known data quirk to watch for**: source accumulator Excel exports have
+occasionally had a wrong Pack Size baked into the file itself for one NDC
+(seen for Tretinoin, NDC 62332080920 — Pack Size stored as 1 instead of
+20). This is a typo in the source file, not an app bug, and will keep
+reappearing on every re-import of that file until corrected at the source
+(or manually edited in the Accumulator page's Actions column) after each
+import.
+
 ## Architecture notes
 
 - **All monetary/quantity math uses `decimal.js`** (`src/lib/calculations.js`).
@@ -175,17 +227,31 @@ upload:
   It's pure record-keeping and never touches the accumulator.
 
 **Replenishment** (`packsToOrder()` in `src/lib/calculations.js`) is
-computed at read time from `claim_line_items.qty_after` and `.pack_size` —
-never stored — so it can't drift out of sync with the source numbers it's
-derived from. The rule (no prior business rule existed in the source
-spreadsheets, so this is a documented default — confirm it matches your
-actual purchasing policy):
+computed at read time from `qty_after` (or the live `accumulator.qty_on_hand`)
+and `.pack_size` — never stored — so it can't drift out of sync with the
+source numbers it's derived from.
+
+**Sign convention** (confirmed directly with the pharmacy team — this is
+the single convention used everywhere: the database, every RPC, every UI
+screen): the balance is **deficit-framed**, not a raw physical count.
+POSITIVE = a shortage (this many units short, needs ordering). NEGATIVE =
+surplus (this many units of extra stock on hand). A claim dispense ADDS
+toward shortage; an order received (invoice upload) SUBTRACTS toward
+surplus.
+
+The replenishment rule (confirmed against the pharmacy's own master
+spreadsheet — floors, and only orders once a shortfall reaches a full
+pack):
 
 ```
-Shortage    = max(0, -qtyAfter)
-Exact Packs = Shortage ÷ Pack Size        (shown as-is, e.g. 1.25 — never rounded)
-Recommended = ceil(Exact Packs)           (whole packs to actually order)
+Shortage    = max(0, qtyAfter)             (only when the balance went positive/short)
+Exact Packs = Shortage ÷ Pack Size         (shown as-is, e.g. 1.25 — never rounded)
+Recommended = floor(Exact Packs)           (a partial pack, e.g. 0.7, is NOT ordered yet — it carries forward)
 ```
+
+A row only appears on an order list once `Recommended >= 1`. If your
+actual purchasing policy ever changes, `packsToOrder()` is the one function
+to edit — its docstring has worked examples.
 
 ### Excel preview
 
